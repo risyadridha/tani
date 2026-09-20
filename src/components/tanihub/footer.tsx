@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { Leaf, Globe, Camera, MessageSquare, Play, MapPin, Phone, Mail } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -48,6 +51,8 @@ const socialLinks = [
 ];
 
 export function Footer() {
+  const [newsletterEmail, setNewsletterEmail] = useState("");
+  const [newsletterDone, setNewsletterDone] = useState(false);
   return (
     <footer className="border-t border-border bg-muted/30" role="contentinfo">
       <div className="container-wide py-12 lg:py-16">
@@ -178,15 +183,31 @@ export function Footer() {
               <p className="text-sm text-muted-foreground mb-4">
                 Dapatkan update harga pasar, tips bertani, dan promo terbaru.
               </p>
-              <form className="flex gap-2 max-w-md" aria-label="Newsletter signup">
-                <Input
-                  type="email"
-                  placeholder="Email Anda"
-                  className="flex-1"
-                  aria-label="Email untuk newsletter"
-                />
-                <Button type="submit">Langganan</Button>
-              </form>
+              {newsletterDone ? (
+                <p className="text-sm text-foreground" role="status">
+                  Terima kasih! Email Anda terdaftar untuk update terbaru.
+                </p>
+              ) : (
+                <form
+                  className="flex gap-2 max-w-md"
+                  aria-label="Newsletter signup"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (newsletterEmail.trim()) setNewsletterDone(true);
+                  }}
+                >
+                  <Input
+                    type="email"
+                    required
+                    value={newsletterEmail}
+                    onChange={(e) => setNewsletterEmail(e.target.value)}
+                    placeholder="Email Anda"
+                    className="flex-1"
+                    aria-label="Email untuk newsletter"
+                  />
+                  <Button type="submit">Langganan</Button>
+                </form>
+              )}
             </div>
           </div>
         </div>

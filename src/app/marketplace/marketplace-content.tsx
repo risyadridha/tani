@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { Navbar } from "@/components/tanihub/navbar";
 import { ProductCard } from "@/components/tanihub/product-card";
 import { Button } from "@/components/ui/button";
@@ -12,10 +13,22 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Search, Filter, X, ChevronDown, Loader2 } from "lucide-react";
 import { mockProducts, mockCategories, mockLocations } from "@/data/products";
+import { isAvailableForMarketplace } from "@/data/seller";
+import { useCartStore } from "@/store/cart";
+import { useSellerCatalogStore } from "@/store/seller-catalog";
 
 export function MarketplaceContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { addItem } = useCartStore();
+  // Single source of truth: katalog mock + produk seller yang memenuhi
+  // business rule (active + stok > 0). Satu daftar, tidak ada dua sistem.
+  // Selector mengambil referensi array (stabil) — filter di useMemo.
+  const sellerProducts = useSellerCatalogStore((s) => s.products);
+  const allProducts = useMemo(
+    () => [...mockProducts, ...sellerProducts.filter(isAvailableForMarketplace)],
+    [sellerProducts]
+  );
 
   const [query, setQuery] = useState(searchParams.get("q") || "");
   const [category, setCategory] = useState(searchParams.get("category") || "Semua");
@@ -24,6 +37,17 @@ export function MarketplaceContent() {
   const [minPrice, setMinPrice] = useState(searchParams.get("minPrice") || "");
   const [maxPrice, setMaxPrice] = useState(searchParams.get("maxPrice") || "");
   const [showFilters, setShowFilters] = useState(false);
+
+  const handleAddToCart = useCallback((product: typeof mockProducts[0]) => {
+    addItem(product, product.minOrder);
+  }, [addItem]);
+
+  const handleChat = useCallback(
+    (product: typeof mockProducts[0]) => {
+      router.push(`/chat/${product.farmerId}?product=${product.id}`);
+    },
+    [router]
+  );
 
   const handleCategoryChange = useCallback((value: string | null) => {
     setCategory(value ?? "");
@@ -50,7 +74,7 @@ export function MarketplaceContent() {
   }, []);
 
   const filteredProducts = useMemo(() => {
-    return mockProducts.filter((product) => {
+    return allProducts.filter((product) => {
       const matchesQuery =
         !query ||
         product.name.toLowerCase().includes(query.toLowerCase()) ||
@@ -64,7 +88,7 @@ export function MarketplaceContent() {
 
       return matchesQuery && matchesCategory && matchesLocation && matchesMinPrice && matchesMaxPrice;
     });
-  }, [query, category, location, minPrice, maxPrice]);
+  }, [allProducts, query, category, location, minPrice, maxPrice]);
 
   const sortedProducts = useMemo(() => {
     const products = [...filteredProducts];
@@ -92,7 +116,8 @@ export function MarketplaceContent() {
     if (sortBy !== "terbaru") params.set("sort", sortBy);
     if (minPrice) params.set("minPrice", minPrice);
     if (maxPrice) params.set("maxPrice", maxPrice);
-    router.push(`/marketplace?${params.toString()}`);
+    // replace (bukan push) agar mengetik filter tidak menumpuk history browser.
+    router.replace(`/marketplace?${params.toString()}`);
   };
 
   useEffect(() => {
@@ -316,9 +341,10 @@ export function MarketplaceContent() {
 
           {sortedProducts.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {sortedProducts.map((product) => (
+              {sortedProducts.map((product, index) => (
                 <ProductCard
                   key={product.id}
+                  productId={product.id}
                   image={product.images[0]}
                   name={product.name}
                   grade={product.grade}
@@ -329,6 +355,9 @@ export function MarketplaceContent() {
                   verified={product.farmerVerified}
                   rating={product.rating}
                   reviewCount={product.reviewCount}
+                  onAddToCart={() => handleAddToCart(product)}
+                  onChat={() => handleChat(product)}
+                  priority={index === 0}
                 />
               ))}
             </div>

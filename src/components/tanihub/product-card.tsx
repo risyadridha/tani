@@ -1,11 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { cn } from "@/lib/utils";
+import Link from "next/link";
+import { cn, formatCurrency } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Star, MapPin, CheckCircle2, Truck } from "lucide-react";
+import { Star, MapPin, CheckCircle2, Truck, MessageSquare } from "lucide-react";
 
 interface ProductCardProps {
   image: string;
@@ -18,9 +19,11 @@ interface ProductCardProps {
   verified: boolean;
   rating: number;
   reviewCount: number;
+  productId: string;
   onAddToCart?: () => void;
   onChat?: () => void;
   className?: string;
+  priority?: boolean;
 }
 
 export function ProductCard({
@@ -34,9 +37,11 @@ export function ProductCard({
   verified,
   rating,
   reviewCount,
+  productId,
   onAddToCart,
   onChat,
   className,
+  priority = false,
 }: ProductCardProps) {
   const gradeColors = {
     A: "bg-green-100 text-green-800 border-green-200",
@@ -60,7 +65,8 @@ export function ProductCard({
           fill
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           className="object-cover transition-transform duration-300 group-hover:scale-105"
-          loading="lazy"
+          loading={priority ? undefined : "lazy"}
+          priority={priority}
         />
         <div className="absolute top-3 left-3 flex flex-col gap-1.5">
           <Badge
@@ -87,15 +93,17 @@ export function ProductCard({
             onClick={onChat}
             aria-label={`Chat penjual ${name}`}
           >
-            <Truck className="h-4 w-4" />
+            <MessageSquare className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
       <CardContent className="flex flex-1 flex-col p-4 space-y-3">
-        <h3 className="text-base font-semibold text-foreground line-clamp-2 group-hover:text-primary transition-colors">
-          {name}
-        </h3>
+        <Link href={`/produk/${productId}`} className="block">
+          <h3 className="text-base font-semibold text-foreground line-clamp-2 group-hover:text-primary transition-colors">
+            {name}
+          </h3>
+        </Link>
 
         <div className="flex items-baseline gap-2">
           <span className="text-xl font-bold text-foreground">
@@ -143,13 +151,4 @@ export function ProductCard({
       </CardContent>
     </Card>
   );
-}
-
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
 }

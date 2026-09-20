@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
 import { CartDrawer } from "@/components/tanihub/cart-drawer";
 import { useCartStore } from "@/store/cart";
+import { useOrderStore, cartItemsToOrderItems } from "@/store/orders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -77,38 +79,53 @@ const paymentMethods = [
 ];
 
 export default function CheckoutPage() {
-  const { items, getSubtotal, clearCart } = useCartStore();
+  const router = useRouter();
+  const { items, getSubtotal, clearCart, isHydrated } = useCartStore();
+  const addOrder = useOrderStore((s) => s.addOrder);
   const [currentStep, setCurrentStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [orderId, setOrderId] = useState<string | null>(null);
 
-  const subtotal = getSubtotal();
+  const subtotal = isHydrated ? getSubtotal() : 0;
   const shipping = subtotal > 500000 ? 0 : 25000;
   const serviceFee = Math.round(subtotal * 0.02);
   const total = subtotal + shipping + serviceFee;
 
   const addressForm = useForm<AddressForm>({
     resolver: zodResolver(addressSchema),
+    mode: "onTouched",
     defaultValues: {
+      fullName: "",
+      phone: "",
+      email: "",
       province: "",
       city: "",
       district: "",
       village: "",
+      address: "",
+      postalCode: "",
+      notes: "",
     },
   });
 
   const deliveryForm = useForm<DeliveryForm>({
     resolver: zodResolver(deliverySchema),
+    mode: "onTouched",
     defaultValues: {
       courier: "",
       service: "",
+      deliveryDate: "",
+      deliveryTime: "",
     },
   });
 
   const paymentForm = useForm<PaymentForm>({
     resolver: zodResolver(paymentSchema),
+    mode: "onTouched",
     defaultValues: {
       method: "va",
+      vaBank: "",
+      ewalletType: "",
     },
   });
 
@@ -124,36 +141,17 @@ export default function CheckoutPage() {
     paymentForm.setValue(field, value ?? "", { shouldValidate: true });
   };
 
-  const canProceed = () => {
-    switch (currentStep) {
-      case 0:
-        return addressForm.formState.isValid;
-      case 1:
-        return deliveryForm.formState.isValid;
-      case 2:
-        return paymentForm.formState.isValid;
-      default:
-        return true;
-    }
-  };
-
   const handleNext = async () => {
     if (currentStep < 3) {
-      const valid = canProceed();
+      const activeForm =
+        currentStep === 0
+          ? addressForm
+          : currentStep === 1
+            ? deliveryForm
+            : paymentForm;
+      const valid = await activeForm.trigger();
       if (valid) {
         setCurrentStep((prev) => prev + 1);
-      } else {
-        switch (currentStep) {
-          case 0:
-            addressForm.trigger();
-            break;
-          case 1:
-            deliveryForm.trigger();
-            break;
-          case 2:
-            paymentForm.trigger();
-            break;
-        }
       }
     } else {
       await handleSubmit();
@@ -165,15 +163,29 @@ export default function CheckoutPage() {
   };
 
   const handleSubmit = async () => {
+    if (items.length === 0) return;
     setIsSubmitting(true);
     // Simulate API call
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const newOrderId = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+    // Persist order BEFORE clearing cart so /pesanan can display it.
+    addOrder({
+      id: newOrderId,
+      items: cartItemsToOrderItems(items),
+      subtotal,
+      shipping,
+      serviceFee,
+      total,
+      recipientName: addressForm.getValues("fullName"),
+      city: addressForm.getValues("city"),
+    });
     setOrderId(newOrderId);
     clearCart();
     setCurrentStep(4); // Success step
     setIsSubmitting(false);
   };
+
+  const isCartEmpty = isHydrated && items.length === 0 && currentStep !== 4;
 
   if (currentStep === 4) {
     return (
@@ -192,13 +204,36 @@ export default function CheckoutPage() {
               Detail pesanan telah dikirim ke email Anda. Anda dapat melacak status pesanan di halaman Pesanan Saya.
             </p>
             <div className="space-y-3">
-              <Button className="w-full" onClick={() => window.location.href = "/pesanan"}>
+              <Button className="w-full" onClick={() => router.push("/pesanan")}>
                 Lihat Pesanan
               </Button>
-              <Button variant="outline" className="w-full" onClick={() => window.location.href = "/marketplace"}>
+              <Button variant="outline" className="w-full" onClick={() => router.push("/marketplace")}>
                 Lanjut Belanja
               </Button>
             </div>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  if (isCartEmpty) {
+    return (
+      <div className="flex flex-col min-h-screen bg-background">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center py-12 px-4">
+          <div className="max-w-md w-full text-center">
+            <Package className="h-16 w-16 mx-auto text-muted-foreground/50 mb-4" />
+            <h1 className="text-2xl font-bold text-foreground mb-2">
+              Keranjang Kosong
+            </h1>
+            <p className="text-muted-foreground mb-8">
+              Tambahkan produk terlebih dahulu sebelum ke halaman checkout.
+            </p>
+            <Button className="w-full" onClick={() => router.push("/marketplace")}>
+              Cari Produk
+            </Button>
           </div>
         </main>
         <Footer />
@@ -295,7 +330,7 @@ export default function CheckoutPage() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <Label htmlFor="province">Provinsi *</Label>
-                          <Select onValueChange={handleAddressSelectChange("province")} defaultValue={addressForm.watch("province")}>
+                          <Select onValueChange={handleAddressSelectChange("province")} value={addressForm.watch("province")}>
                             <SelectTrigger>
                               <SelectValue placeholder="Pilih provinsi" />
                             </SelectTrigger>
@@ -372,7 +407,7 @@ export default function CheckoutPage() {
                     <CardContent className="space-y-4">
                       <div>
                         <Label>Kurir *</Label>
-                        <Select onValueChange={handleDeliverySelectChange("courier")} defaultValue={deliveryForm.watch("courier")}>
+                        <Select onValueChange={handleDeliverySelectChange("courier")} value={deliveryForm.watch("courier")}>
                           <SelectTrigger>
                             <SelectValue placeholder="Pilih kurir" />
                           </SelectTrigger>
@@ -386,7 +421,7 @@ export default function CheckoutPage() {
 
                       <div>
                         <Label>Layanan *</Label>
-                        <Select onValueChange={handleDeliverySelectChange("service")} defaultValue={deliveryForm.watch("service")}>
+                        <Select onValueChange={handleDeliverySelectChange("service")} value={deliveryForm.watch("service")}>
                           <SelectTrigger>
                             <SelectValue placeholder="Pilih layanan" />
                           </SelectTrigger>
@@ -410,7 +445,7 @@ export default function CheckoutPage() {
                         </div>
                         <div>
                           <Label htmlFor="deliveryTime">Waktu Pengiriman (Opsional)</Label>
-                          <Select onValueChange={handleDeliverySelectChange("deliveryTime")} defaultValue={deliveryForm.watch("deliveryTime")}>
+                          <Select onValueChange={handleDeliverySelectChange("deliveryTime")} value={deliveryForm.watch("deliveryTime")}>
                             <SelectTrigger>
                               <SelectValue placeholder="Pilih waktu" />
                             </SelectTrigger>
@@ -444,20 +479,13 @@ export default function CheckoutPage() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      <RadioGroup onValueChange={handlePaymentSelectChange("method")} defaultValue={paymentForm.watch("method")}>
+                      <RadioGroup onValueChange={handlePaymentSelectChange("method")} value={paymentForm.watch("method")}>
                         {paymentMethods.map((method) => (
                           <div key={method.id} className="border border-border rounded-xl p-4 hover:bg-muted/50 transition-colors">
                             <div className="flex items-center gap-3">
                               <RadioGroupItem value={method.id} className="h-4 w-4" />
                               <span className="font-medium text-foreground">{method.name}</span>
                             </div>
-                            {method.banks && method.banks.length > 0 && (
-                              <div className="mt-3 ml-7 flex flex-wrap gap-2">
-                                {method.banks.map((bank) => (
-                                  <RadioGroupItem key={bank} value={bank} className="peer" />
-                                ))}
-                              </div>
-                            )}
                           </div>
                         ))}
                       </RadioGroup>
@@ -465,7 +493,7 @@ export default function CheckoutPage() {
                       {paymentForm.watch("method") === "va" && (
                         <div className="ml-7 mt-2">
                           <Label>Pilih Bank *</Label>
-                          <Select onValueChange={handlePaymentSelectChange("vaBank")} defaultValue={paymentForm.watch("vaBank")}>
+                          <Select onValueChange={handlePaymentSelectChange("vaBank")} value={paymentForm.watch("vaBank")}>
                             <SelectTrigger>
                               <SelectValue placeholder="Pilih bank" />
                             </SelectTrigger>
@@ -481,7 +509,7 @@ export default function CheckoutPage() {
                       {paymentForm.watch("method") === "ewallet" && (
                         <div className="ml-7 mt-2">
                           <Label>Pilih E-Wallet *</Label>
-                          <Select onValueChange={handlePaymentSelectChange("ewalletType")} defaultValue={paymentForm.watch("ewalletType")}>
+                          <Select onValueChange={handlePaymentSelectChange("ewalletType")} value={paymentForm.watch("ewalletType")}>
                             <SelectTrigger>
                               <SelectValue placeholder="Pilih e-wallet" />
                             </SelectTrigger>
@@ -566,7 +594,7 @@ export default function CheckoutPage() {
                                 alt={item.product.name}
                                 width={50}
                                 height={50}
-                                className="rounded-lg object-cover"
+                                className="h-[50px] w-[50px] rounded-lg object-cover"
                               />
                               <div>
                                 <p className="text-sm font-medium">{item.product.name}</p>
@@ -620,7 +648,7 @@ export default function CheckoutPage() {
                           alt={item.product.name}
                           width={50}
                           height={50}
-                          className="rounded-lg object-cover"
+                          className="h-[50px] w-[50px] rounded-lg object-cover"
                         />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{item.product.name}</p>

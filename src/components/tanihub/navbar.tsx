@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { useCartStore } from "@/store/cart";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,8 +42,18 @@ const navItems = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const openCart = useCartStore((s) => s.openCart);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [desktopQuery, setDesktopQuery] = useState("");
+  const [mobileQuery, setMobileQuery] = useState("");
+
+  const submitSearch = (q: string) => {
+    const query = q.trim();
+    router.push(query ? `/marketplace?q=${encodeURIComponent(query)}` : "/marketplace");
+    setSearchOpen(false);
+  };
 
   return (
     <>
@@ -78,15 +90,23 @@ export function Navbar() {
           {/* Right Actions */}
           <div className="flex items-center gap-2">
             {/* Search */}
-            <div className="relative">
+            <form
+              className="relative"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitSearch(desktopQuery);
+              }}
+            >
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 type="search"
+                value={desktopQuery}
+                onChange={(e) => setDesktopQuery(e.target.value)}
                 placeholder="Cari produk, petani, komoditas..."
                 className="h-10 w-64 pl-10 pr-4 text-sm bg-muted/50 border-border focus:bg-background"
                 aria-label="Pencarian"
               />
-            </div>
+            </form>
 
             {/* Notifications */}
             <Button
@@ -94,18 +114,19 @@ export function Navbar() {
               size="icon"
               className="h-10 w-10"
               aria-label="Notifikasi"
+              onClick={() => toast.info("Belum ada notifikasi baru.")}
             >
               <Bell className="h-5 w-5" />
             </Button>
 
             {/* Cart */}
-            <Button variant="ghost" size="icon" className="h-10 w-10" aria-label="Keranjang">
+            <Button variant="ghost" size="icon" className="h-10 w-10" aria-label="Keranjang" onClick={openCart}>
               <ShoppingCart className="h-5 w-5" />
             </Button>
 
             {/* User Menu */}
             <DropdownMenu>
-              <DropdownMenuTrigger className="h-10 w-10 rounded-full" aria-label="Menu pengguna">
+              <DropdownMenuTrigger className="h-10 w-10 rounded-full inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50" aria-label="Menu pengguna">
                 <User className="h-5 w-5" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
@@ -130,6 +151,16 @@ export function Navbar() {
                 <DropdownMenuItem>
                   <Link href="/menjual" className="flex h-full w-full">
                     Mulai Menjual
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem>
+                  <Link href="/kelola-produk" className="flex h-full w-full">
+                    Kelola Produk
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem>
+                  <Link href="/inventaris" className="flex h-full w-full">
+                    Inventaris
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -172,14 +203,13 @@ export function Navbar() {
               size="icon"
               className="h-10 w-10"
               aria-label="Keranjang"
+              onClick={openCart}
             >
               <ShoppingCart className="h-5 w-5" />
             </Button>
             <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
-              <SheetTrigger>
-                <Button variant="ghost" size="icon" className="h-10 w-10" aria-label="Menu">
-                  <Menu className="h-5 w-5" />
-                </Button>
+              <SheetTrigger className="h-10 w-10 inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50" aria-label="Menu">
+                <Menu className="h-5 w-5" />
               </SheetTrigger>
               <SheetContent side="right" className="w-72 p-0">
                 <div className="flex items-center justify-between p-4 border-b border-border">
@@ -242,24 +272,38 @@ export function Navbar() {
           <div
             className="fixed inset-0 z-50 bg-background border-b border-border"
             onClick={() => setSearchOpen(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setSearchOpen(false);
+            }}
             role="dialog"
             aria-modal="true"
             aria-label="Pencarian"
           >
             <div className="container-narrow h-full flex items-start justify-center pt-20">
               <div className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-                <div className="relative">
+                <form
+                  className="relative"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitSearch(mobileQuery);
+                  }}
+                >
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
                   <Input
                     type="search"
+                    value={mobileQuery}
+                    onChange={(e) => setMobileQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setSearchOpen(false);
+                    }}
                     placeholder="Cari produk, petani, komoditas..."
                     className="h-12 pl-12 pr-4 text-base bg-muted/50 border-border"
                     autoFocus
                     aria-label="Pencarian"
                   />
-                </div>
+                </form>
                 <p className="mt-4 text-center text-sm text-muted-foreground">
-                  Tekan ESC atau klik di luar untuk menutup
+                  Tekan Enter untuk mencari, ESC atau klik di luar untuk menutup
                 </p>
               </div>
             </div>

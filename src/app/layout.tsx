@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers/providers";
+import { CartDrawer } from "@/components/tanihub/cart-drawer";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,6 +17,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  // Required for resolving relative metadata URLs (OG, canonical).
+  // Uses production URL; override with NEXT_PUBLIC_SITE_URL in non-production envs.
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ?? "https://tanihub.id"
+  ),
   title: {
     default: "TaniHub — Temukan Hasil Tani, Temukan Pembeli",
     template: "%s | TaniHub",
@@ -43,24 +49,14 @@ export const metadata: Metadata = {
     title: "TaniHub — Temukan Hasil Tani, Temukan Pembeli",
     description:
       "Platform pertanian modern menghubungkan petani dengan pembeli secara langsung.",
-    images: [
-      {
-        url: "/og-image.jpg",
-        width: 1200,
-        height: 630,
-        alt: "TaniHub - Marketplace Pertanian Indonesia",
-      },
-    ],
+    // NOTE: OG/Twitter images intentionally omitted until a real
+    // 1200x630 asset exists in public/.
   },
   twitter: {
-    card: "summary_large_image",
+    card: "summary",
     title: "TaniHub",
     description:
       "Platform pertanian modern menghubungkan petani dengan pembeli secara langsung.",
-    images: ["/og-image.jpg"],
-  },
-  verification: {
-    google: "google-site-verification-code",
   },
 };
 
@@ -94,7 +90,10 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        <Providers>{children}</Providers>
+        <Providers>
+          {children}
+          <CartDrawer />
+        </Providers>
       </body>
     </html>
   );

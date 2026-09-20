@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useCartStore } from "@/store/cart";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
@@ -10,6 +11,7 @@ import { Plus, Minus, Trash2, X, Package, Truck, CreditCard } from "lucide-react
 
 export function CartDrawer() {
   const { items, isOpen, closeCart, removeItem, updateQuantity, getSubtotal, getTotalItems } = useCartStore();
+  const router = useRouter();
   const subtotal = getSubtotal();
   const totalItems = getTotalItems();
   const shipping = subtotal > 500000 ? 0 : 25000;
@@ -35,7 +37,7 @@ export function CartDrawer() {
             <Package className="h-16 w-16 text-muted-foreground/50 mb-4" />
             <h3 className="text-lg font-semibold text-foreground mb-2">Keranjang Kosong</h3>
             <p className="text-muted-foreground mb-6">Belum ada produk di keranjang Anda</p>
-            <Button onClick={closeCart} className="w-full sm:w-auto">
+            <Button onClick={() => { closeCart(); router.push("/marketplace"); }} className="w-full sm:w-auto">
               Mulai Belanja
             </Button>
           </div>
@@ -152,7 +154,7 @@ export function CartDrawer() {
             </p>
           )}
 
-          <Button className="w-full h-12 text-lg" onClick={() => { closeCart(); window.location.href = "/checkout"; }}>
+          <Button className="w-full h-12 text-lg" onClick={() => { closeCart(); router.push("/checkout"); }}>
             Checkout
           </Button>
         </div>

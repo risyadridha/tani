@@ -26,14 +26,22 @@ export const QuantitySelector = forwardRef<
     setLocalValue(value);
   }, [value]);
 
+  // Nilai valid = min + n*step dalam [min, max] agar konsisten dengan
+  // minOrder (mis. kelipatan 20/50). Input manual dibulatkan ke grid ini.
+  const roundToStep = (raw: number) => {
+    const clamped = Math.min(Math.max(raw, min), max);
+    const stepped = min + Math.round((clamped - min) / step) * step;
+    return Math.min(Math.max(stepped, min), max);
+  };
+
   const increment = () => {
-    const newValue = Math.min(localValue + step, max);
+    const newValue = roundToStep(localValue + step);
     setLocalValue(newValue);
     onChange(newValue);
   };
 
   const decrement = () => {
-    const newValue = Math.max(localValue - step, min);
+    const newValue = roundToStep(localValue - step);
     setLocalValue(newValue);
     onChange(newValue);
   };
@@ -41,20 +49,21 @@ export const QuantitySelector = forwardRef<
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const inputValue = parseInt(e.target.value, 10);
     if (!isNaN(inputValue)) {
-      const clampedValue = Math.min(Math.max(inputValue, min), max);
-      setLocalValue(clampedValue);
-      onChange(clampedValue);
+      const steppedValue = roundToStep(inputValue);
+      setLocalValue(steppedValue);
+      onChange(steppedValue);
     }
   };
 
   const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
     const inputValue = parseInt(e.target.value, 10);
-    if (isNaN(inputValue) || inputValue < min) {
+    if (isNaN(inputValue)) {
       setLocalValue(min);
       onChange(min);
-    } else if (inputValue > max) {
-      setLocalValue(max);
-      onChange(max);
+    } else {
+      const steppedValue = roundToStep(inputValue);
+      setLocalValue(steppedValue);
+      onChange(steppedValue);
     }
   };
 

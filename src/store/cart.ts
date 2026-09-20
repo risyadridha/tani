@@ -13,6 +13,7 @@ export interface CartItem {
 interface CartState {
   items: CartItem[];
   isOpen: boolean;
+  isHydrated: boolean;
   addItem: (product: Product, quantity?: number) => void;
   removeItem: (itemId: string) => void;
   updateQuantity: (itemId: string, quantity: number) => void;
@@ -23,6 +24,7 @@ interface CartState {
   getTotalItems: () => number;
   getSubtotal: () => number;
   getItemCount: (productId: string) => number;
+  setHydrated: (hydrated: boolean) => void;
 }
 
 export const useCartStore = create<CartState>()(
@@ -30,6 +32,9 @@ export const useCartStore = create<CartState>()(
     (set, get) => ({
       items: [],
       isOpen: false,
+      isHydrated: false,
+
+      setHydrated: (hydrated) => set({ isHydrated: hydrated }),
 
       addItem: (product, quantity = product.minOrder) => {
         const existingItem = get().items.find((item) => item.productId === product.id);
@@ -89,6 +94,11 @@ export const useCartStore = create<CartState>()(
     {
       name: "tanihub-cart",
       partialize: (state) => ({ items: state.items }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.setHydrated(true);
+        }
+      },
     }
   )
 );

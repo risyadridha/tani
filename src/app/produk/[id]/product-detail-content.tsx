@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import Image from "next/image";
 import { Navbar } from "@/components/tanihub/navbar";
 import { ProductCard } from "@/components/tanihub/product-card";
@@ -31,6 +33,7 @@ import {
   User,
 } from "lucide-react";
 import { Product } from "@/data/products";
+import { useCartStore } from "@/store/cart";
 
 interface ProductDetailContentProps {
   product: Product;
@@ -41,6 +44,45 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
   const [selectedImage, setSelectedImage] = useState(0);
   const [quantity, setQuantity] = useState(product.minOrder);
   const [activeTab, setActiveTab] = useState("deskripsi");
+  const [isWished, setIsWished] = useState(false);
+  const [failedImages, setFailedImages] = useState<ReadonlySet<number>>(new Set());
+
+  // Navigasi antar produk (mis. via "produk terkait") memakai ulang komponen
+  // yang sama — reset agar index tidak menunjuk gambar produk sebelumnya.
+  useEffect(() => {
+    setSelectedImage(0);
+    setQuantity(product.minOrder);
+    setFailedImages(new Set());
+  }, [product.id, product.minOrder]);
+
+  const safeIndex =
+    product.images.length === 0
+      ? -1
+      : Math.min(selectedImage, product.images.length - 1);
+
+  const markImageFailed = (index: number) =>
+    setFailedImages((prev) => {
+      if (prev.has(index)) return prev;
+      const next = new Set(prev);
+      next.add(index);
+      return next;
+    });
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success("Tautan produk disalin.");
+    } catch {
+      toast.info("Salin tautan dari address bar browser.");
+    }
+  };
+  const { addItem, openCart } = useCartStore();
+  const router = useRouter();
+
+  // Stok di bawah min. pembelian (atau habis) tidak dapat dibeli — inventaris
+  // tetap jujur (angka apa adanya), PDP yang menanganinya eksplisit.
+  const cannotBuy = product.stock < product.minOrder;
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString("id-ID", {
@@ -82,14 +124,22 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
         {/* Product Gallery */}
         <div className="space-y-4">
           <div className="relative aspect-[4/3] rounded-2xl overflow-hidden bg-muted">
-            <Image
-              src={product.images[selectedImage]}
-              alt={`${product.name} - Gambar ${selectedImage + 1}`}
-              fill
-              priority
-              sizes="(max-width: 1024px) 100vw, 50vw"
-              className="object-cover"
-            />
+            {safeIndex >= 0 && !failedImages.has(safeIndex) ? (
+              <Image
+                src={product.images[safeIndex]}
+                alt={`${product.name} - Gambar ${safeIndex + 1}`}
+                fill
+                priority
+                sizes="(max-width: 1024px) 100vw, 50vw"
+                className="object-cover"
+                onError={() => markImageFailed(safeIndex)}
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                <Package className="h-12 w-12" />
+                <p className="text-sm">Gambar tidak tersedia</p>
+              </div>
+            )}
             {product.farmerVerified && (
               <div className="absolute top-4 right-4">
                 <Badge className="gap-1 px-3 py-1.5 bg-primary/90 text-primary-foreground">
@@ -114,30 +164,34 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
             )}
           </div>
 
-          {product.images.length > 1 && (
+          {product.images.filter((_, i) => !failedImages.has(i)).length > 1 && (
             <div className="flex gap-2 overflow-x-auto pb-2">
-              {product.images.map((image, index) => (
-                <button
-                  key={index}
-                  onClick={() => setSelectedImage(index)}
-                  className={cn(
-                    "relative h-20 w-20 sm:h-24 sm:w-24 flex-shrink-0 rounded-xl overflow-hidden border-2 transition-all",
-                    selectedImage === index
-                      ? "border-primary"
-                      : "border-transparent hover:border-muted-foreground/30"
-                  )}
-                  aria-label={`Lihat gambar ${index + 1}`}
-                  aria-current={selectedImage === index ? "true" : "false"}
-                >
-                  <Image
-                    src={image}
-                    alt={`${product.name} - Gambar ${index + 1}`}
-                    fill
-                    className="object-cover"
-                    sizes="96px"
-                  />
-                </button>
-              ))}
+              {product.images.map((image, index) => {
+                if (failedImages.has(index)) return null;
+                return (
+                  <button
+                    key={`${product.id}-${index}`}
+                    onClick={() => setSelectedImage(index)}
+                    className={cn(
+                      "relative h-20 w-20 sm:h-24 sm:w-24 flex-shrink-0 rounded-xl overflow-hidden border-2 transition-all",
+                      safeIndex === index
+                        ? "border-primary"
+                        : "border-transparent hover:border-muted-foreground/30"
+                    )}
+                    aria-label={`Lihat gambar ${index + 1}`}
+                    aria-current={safeIndex === index ? "true" : "false"}
+                  >
+                    <Image
+                      src={image}
+                      alt={`${product.name} - Gambar ${index + 1}`}
+                      fill
+                      className="object-cover"
+                      sizes="96px"
+                      onError={() => markImageFailed(index)}
+                    />
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -213,7 +267,7 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
                   </span>
                 </div>
               </div>
-              <Button variant="outline" size="sm" className="whitespace-nowrap">
+              <Button variant="outline" size="sm" className="whitespace-nowrap" onClick={() => router.push(`/chat/${product.farmerId}?product=${product.id}`)}>
                 <MessageSquare className="h-4 w-4 mr-1.5" />
                 Chat
               </Button>
@@ -232,27 +286,53 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
                 step={product.minOrder}
                 unit={product.unit}
                 className="w-full sm:w-64"
+                disabled={cannotBuy}
               />
             </div>
 
             <div className="flex gap-3">
               <Button
                 className="flex-1 h-12 text-lg"
+                disabled={cannotBuy}
                 onClick={() => {
-                  // Add to cart logic
+                  addItem(product, quantity);
+                  openCart();
                 }}
               >
                 Tambah ke Keranjang
               </Button>
-              <Button variant="outline" className="h-12 px-6">
-                <Heart className="h-5 w-5" />
+              <Button
+                variant="outline"
+                className="h-12 px-6"
+                aria-label={isWished ? "Hapus dari favorit" : "Simpan ke favorit"}
+                aria-pressed={isWished}
+                onClick={() => {
+                  setIsWished((v) => {
+                    toast.success(v ? "Dihapus dari favorit." : "Disimpan ke favorit.");
+                    return !v;
+                  });
+                }}
+              >
+                <Heart className={cn("h-5 w-5", isWished && "fill-red-500 text-red-500")} />
               </Button>
-              <Button variant="outline" className="h-12 px-6">
+              <Button
+                variant="outline"
+                className="h-12 px-6"
+                aria-label="Bagikan produk"
+                onClick={handleShare}
+              >
                 <Share2 className="h-5 w-5" />
               </Button>
             </div>
 
             {/* Quick Info */}
+            {cannotBuy && (
+              <p className="text-sm text-warning font-medium" role="status">
+                {product.stock <= 0
+                  ? "Stok produk ini sedang habis."
+                  : `Stok tersisa ${product.stock} ${product.unit} — di bawah min. pembelian ${product.minOrder} ${product.unit}.`}
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-border">
               <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-xl">
                 <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -297,22 +377,31 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
 
       {/* Tabs Section */}
       <div className="mt-10 lg:mt-14">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4 lg:w-auto">
-            <TabsTrigger value="deskripsi">Deskripsi</TabsTrigger>
-            <TabsTrigger value="informasi">Informasi Produk</TabsTrigger>
-            <TabsTrigger value="panen">Informasi Panen</TabsTrigger>
-            <TabsTrigger value="penjual">Informasi Penjual</TabsTrigger>
+          {/* flex-col eksplisit: varian data-horizontal di ui/tabs tidak cocok
+              dengan atribut Base UI (data-orientation), sehingga root flex-row
+              membuat list & panel tampil sejajar. */}
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full flex-col">
+          <TabsList variant="line" className="flex w-full justify-start gap-6 overflow-x-auto border-b border-border">
+            <TabsTrigger value="deskripsi" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">Deskripsi</TabsTrigger>
+            <TabsTrigger value="informasi" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">Informasi Produk</TabsTrigger>
+            <TabsTrigger value="panen" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">Informasi Panen</TabsTrigger>
+            <TabsTrigger value="penjual" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">Penjual</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="deskripsi" className="mt-6 space-y-4">
-            <h3 className="text-lg font-semibold text-foreground">Deskripsi Produk</h3>
-            <p className="text-muted-foreground whitespace-pre-line">{product.description}</p>
+          <TabsContent value="deskripsi" className="mt-4">
+            <Card>
+              <CardContent className="p-5 sm:p-6 space-y-3">
+                <h3 className="text-lg font-semibold text-foreground">Deskripsi Produk</h3>
+                <p className="text-muted-foreground whitespace-pre-line">{product.description}</p>
+              </CardContent>
+            </Card>
           </TabsContent>
 
-          <TabsContent value="informasi" className="mt-6 space-y-4">
-            <h3 className="text-lg font-semibold text-foreground">Informasi Detail</h3>
-            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <TabsContent value="informasi" className="mt-4">
+            <Card>
+              <CardContent className="p-5 sm:p-6 space-y-4">
+                <h3 className="text-lg font-semibold text-foreground">Informasi Detail</h3>
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
               <div className="flex flex-col gap-1">
                 <dt className="text-sm text-muted-foreground">Nama Produk</dt>
                 <dd className="text-foreground">{product.name}</dd>
@@ -345,11 +434,13 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
                 <dt className="text-sm text-muted-foreground">Lokasi</dt>
                 <dd className="text-foreground">{product.location}</dd>
               </div>
-              <div className="flex flex-col gap-1">
-                <dt className="text-sm text-muted-foreground">Tags</dt>
-                <dd className="text-foreground">{product.tags.join(", ")}</dd>
-              </div>
-            </dl>
+                <div className="flex flex-col gap-1">
+                  <dt className="text-sm text-muted-foreground">Tags</dt>
+                  <dd className="text-foreground">{product.tags.join(", ")}</dd>
+                </div>
+              </dl>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="panen" className="mt-6 space-y-4">
@@ -443,11 +534,15 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
                   </span>
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => router.push(`/chat/${product.farmerId}?product=${product.id}`)}
+                  >
                     <MessageSquare className="h-4 w-4 mr-1.5" />
                     Chat Penjual
                   </Button>
-                  <Button size="sm">
+                  <Button size="sm" onClick={() => router.push(`/petani/${product.farmerId}`)}>
                     Lihat Profil
                   </Button>
                 </div>
@@ -460,6 +555,7 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
                 {relatedProducts.map((p) => (
                   <ProductCard
                     key={p.id}
+                    productId={p.id}
                     image={p.images[0]}
                     name={p.name}
                     grade={p.grade}
@@ -485,21 +581,22 @@ export function ProductDetailContent({ product, relatedProducts }: ProductDetail
             <h2 className="text-2xl font-bold text-foreground">Produk Serupa</h2>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {relatedProducts.map((p) => (
-              <ProductCard
-                key={p.id}
-                image={p.images[0]}
-                name={p.name}
-                grade={p.grade}
-                price={p.price}
-                unit={p.unit}
-                minOrder={p.minOrder}
-                location={p.location}
-                verified={p.farmerVerified}
-                rating={p.rating}
-                reviewCount={p.reviewCount}
-              />
-            ))}
+{relatedProducts.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    productId={p.id}
+                    image={p.images[0]}
+                    name={p.name}
+                    grade={p.grade}
+                    price={p.price}
+                    unit={p.unit}
+                    minOrder={p.minOrder}
+                    location={p.location}
+                    verified={p.farmerVerified}
+                    rating={p.rating}
+                    reviewCount={p.reviewCount}
+                  />
+                ))}
           </div>
         </section>
       )}

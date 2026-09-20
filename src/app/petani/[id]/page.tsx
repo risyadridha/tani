@@ -1,0 +1,316 @@
+"use client";
+
+import { useMemo } from "react";
+import { notFound, useParams, useRouter } from "next/navigation";
+import { Navbar } from "@/components/tanihub/navbar";
+import { Footer } from "@/components/tanihub/footer";
+import { ProductCard } from "@/components/tanihub/product-card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getFarmerById } from "@/data/farmers";
+import {
+  getProductById,
+  getProductsByFarmerId,
+  mockProducts,
+} from "@/data/products";
+import { useCartStore } from "@/store/cart";
+import { useSellerStore } from "@/store/seller";
+import { useSellerCatalogStore } from "@/store/seller-catalog";
+import {
+  Star,
+  MapPin,
+  CheckCircle2,
+  MessageSquare,
+  Package,
+  ChevronLeft,
+  Award,
+  Calendar,
+  MessageSquareText,
+} from "lucide-react";
+
+export default function FarmerDetailPage() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const { addItem } = useCartStore();
+  const farmerId = params.id;
+  const sellerFarmer = useSellerStore((s) => s.farmer);
+  const sellerProducts = useSellerCatalogStore((s) => s.products);
+  const catalogHydrated = useSellerCatalogStore((s) => s.isHydrated);
+
+  const farmer = useMemo(() => {
+    const found = getFarmerById(farmerId);
+    if (found) return found;
+    // Akun seller dari Sprint 1 (dibuat saat application disetujui).
+    if (sellerFarmer && sellerFarmer.id === farmerId) {
+      return {
+        id: sellerFarmer.id,
+        name: sellerFarmer.name,
+        avatar: sellerFarmer.avatar,
+        location: sellerFarmer.location,
+        verified: true,
+        rating: 0,
+        reviewCount: 0,
+        completedOrders: 0,
+        responseRate: 100,
+        memberSince: sellerFarmer.memberSince,
+        commodities: sellerFarmer.commodities,
+        description: sellerFarmer.description,
+        farmSize: sellerFarmer.farmSize ?? "-",
+        certifications: [] as string[],
+        upcomingHarvests: [] as {
+          crop: string;
+          estimatedDate: string;
+          estimatedQuantity: string;
+        }[],
+      };
+    }
+    // Fallback untuk farmer-6..8 yang hanya ada di products.ts
+    const product = mockProducts.find((p) => p.farmerId === farmerId);
+    if (!product) return undefined;
+    return {
+      id: product.farmerId,
+      name: product.farmerName,
+      avatar: product.images[0],
+      location: product.location,
+      verified: product.farmerVerified,
+      rating: product.farmerRating,
+      reviewCount: product.farmerReviewCount,
+      completedOrders: product.farmerReviewCount,
+      responseRate: 90,
+      memberSince: "-",
+      commodities: [product.category],
+      description: `Petani ${product.name} dari ${product.location}.`,
+      farmSize: "-",
+      certifications: [] as string[],
+      upcomingHarvests: [] as {
+        crop: string;
+        estimatedDate: string;
+        estimatedQuantity: string;
+      }[],
+    };
+  }, [farmerId, sellerFarmer]);
+
+  const products = useMemo(() => {
+    const base = getProductsByFarmerId(farmerId);
+    if (!catalogHydrated) return base;
+    // Produk seller tampil di profil yang sama — satu katalog.
+    const mine = sellerProducts.filter((p) => p.farmerId === farmerId);
+    return [...mine, ...base];
+  }, [farmerId, sellerProducts, catalogHydrated]);
+
+  if (!farmer) {
+    notFound();
+  }
+
+  const hasRating = farmer.reviewCount > 0;
+
+  return (
+    <div className="flex flex-col min-h-screen bg-background">
+      <Navbar />
+      <main className="flex-1 pt-6 pb-12 lg:pt-8 lg:pb-16">
+        <div className="container-wide">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mb-4"
+            onClick={() => router.back()}
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Kembali
+          </Button>
+
+          <Card className="mb-8">
+            <CardContent className="p-6 flex flex-col sm:flex-row gap-6">
+              <Avatar className="h-24 w-24">
+                <AvatarImage src={farmer.avatar} alt={farmer.name} />
+                <AvatarFallback className="text-2xl font-semibold bg-primary/10 text-primary">
+                  {farmer.name.charAt(0).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-2xl font-bold text-foreground">
+                    {farmer.name}
+                  </h1>
+                  {farmer.verified && (
+                    <Badge variant="secondary" className="gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Terverifikasi
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-muted-foreground mt-1 flex items-center gap-1">
+                  <MapPin className="h-4 w-4" />
+                  {farmer.location}
+                </p>
+                <div className="flex items-center gap-4 mt-2 text-sm">
+                  {hasRating ? (
+                    <span className="flex items-center gap-1">
+                      <Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />
+                      {farmer.rating.toFixed(1)} ({farmer.reviewCount} ulasan)
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">Belum ada ulasan</span>
+                  )}
+                  <span className="flex items-center gap-1 text-muted-foreground">
+                    <Package className="h-4 w-4" />
+                    {farmer.completedOrders} pesanan selesai
+                  </span>
+                  <span className="text-muted-foreground">
+                    {products.length} produk • Bergabung {farmer.memberSince}
+                  </span>
+                </div>
+                <p className="text-sm text-foreground mt-3 max-w-2xl">
+                  {farmer.description}
+                </p>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {farmer.commodities.map((c) => (
+                    <Badge key={c} variant="outline">
+                      {c}
+                    </Badge>
+                  ))}
+                </div>
+                <div className="mt-4">
+                  <Button onClick={() => router.push(`/chat/${farmer.id}`)}>
+                    <MessageSquare className="h-4 w-4 mr-2" />
+                    Chat Petani
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Tabs defaultValue="produk" className="w-full flex-col">
+            <TabsList variant="line" className="flex w-full justify-start gap-6 overflow-x-auto border-b border-border">
+              <TabsTrigger value="produk" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">
+                Produk ({products.length})
+              </TabsTrigger>
+              <TabsTrigger value="tentang" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">
+                Tentang
+              </TabsTrigger>
+              <TabsTrigger value="ulasan" className="-mb-px flex-none rounded-none px-1 pb-3 text-sm data-[active]:border-b-2 data-[active]:border-primary data-[active]:font-semibold">
+                Ulasan
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="produk" className="mt-6">
+              {products.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {products.map((p) => (
+                    <ProductCard
+                      key={p.id}
+                      productId={p.id}
+                      image={p.images[0]}
+                      name={p.name}
+                      grade={p.grade}
+                      price={p.price}
+                      unit={p.unit}
+                      minOrder={p.minOrder}
+                      location={p.location}
+                      verified={p.farmerVerified}
+                      rating={p.rating}
+                      reviewCount={p.reviewCount}
+                      onAddToCart={() => addItem(getProductById(p.id) ?? p, p.minOrder)}
+                      onChat={() =>
+                        router.push(`/chat/${p.farmerId}?product=${p.id}`)
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">
+                  Petani ini belum memiliki produk aktif.
+                </p>
+              )}
+            </TabsContent>
+
+            <TabsContent value="tentang" className="mt-6">
+              <div className="grid lg:grid-cols-3 gap-6">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Award className="h-4 w-4" />
+                      Sertifikasi
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {farmer.certifications.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {farmer.certifications.map((c) => (
+                          <Badge key={c} variant="secondary">
+                            {c}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Belum ada sertifikasi tercatat.
+                      </p>
+                    )}
+                    <Separator className="my-3" />
+                    <p className="text-sm text-muted-foreground">
+                      Luas lahan:{" "}
+                      <span className="text-foreground font-medium">
+                        {farmer.farmSize}
+                      </span>
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Calendar className="h-4 w-4" />
+                      Rencana Panen
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {farmer.upcomingHarvests.length > 0 ? (
+                      <ul className="space-y-2 text-sm">
+                        {farmer.upcomingHarvests.map((h) => (
+                          <li
+                            key={`${h.crop}-${h.estimatedDate}`}
+                            className="flex justify-between gap-2 border-b border-border/50 pb-2 last:border-0"
+                          >
+                            <span className="font-medium text-foreground">
+                              {h.crop}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {h.estimatedDate} • {h.estimatedQuantity}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Belum ada jadwal panen tercatat.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="ulasan" className="mt-6">
+              <Card>
+                <CardContent className="p-8 text-center">
+                  <MessageSquareText className="h-10 w-10 mx-auto text-muted-foreground/50 mb-3" />
+                  <h2 className="font-semibold text-foreground mb-1">
+                    Belum ada ulasan.
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    Ulasan pembeli akan tampil di sini setelah fitur ulasan tersedia.
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </main>
+      <Footer />
+    </div>
+  );
+}
