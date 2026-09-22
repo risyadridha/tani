@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -26,6 +27,9 @@ interface ProductCardProps {
   priority?: boolean;
 }
 
+const FALLBACK_IMAGE =
+  "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=800&q=80";
+
 export function ProductCard({
   image,
   name,
@@ -43,6 +47,8 @@ export function ProductCard({
   className,
   priority = false,
 }: ProductCardProps) {
+  // Fallback bila gambar remote rusak/expired — kartu tak pernah rusak.
+  const [imgSrc, setImgSrc] = useState(image && image.trim() !== "" ? image : FALLBACK_IMAGE);
   const gradeColors = {
     A: "bg-green-100 text-green-800 border-green-200",
     B: "bg-yellow-100 text-yellow-800 border-yellow-200",
@@ -60,13 +66,16 @@ export function ProductCard({
     >
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         <Image
-          src={image}
+          src={imgSrc}
           alt={name}
           fill
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           className="object-cover transition-transform duration-300 group-hover:scale-105"
           loading={priority ? undefined : "lazy"}
           priority={priority}
+          onError={() => {
+            if (imgSrc !== FALLBACK_IMAGE) setImgSrc(FALLBACK_IMAGE);
+          }}
         />
         <div className="absolute top-3 left-3 flex flex-col gap-1.5">
           <Badge

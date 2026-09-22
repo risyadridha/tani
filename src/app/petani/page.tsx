@@ -1,84 +1,103 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
 import { FarmerCard } from "@/components/tanihub/farmer-card";
 import { Input } from "@/components/ui/input";
-import { mockFarmers, type Farmer } from "@/data/farmers";
-import { mockProducts } from "@/data/products";
-import type { SellerFarmer } from "@/data/seller";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { apiFetch, type ApiFarmer, type ApiMeta } from "@/lib/api";
 import { useSellerStore } from "@/store/seller";
-import { Search } from "lucide-react";
+import type { SellerFarmer } from "@/data/seller";
+import { Search, Loader2 } from "lucide-react";
 
-// Petani yang hanya muncul di products.ts (farmer-6..8) belum ada di
-// mockFarmers. Sintesis profil minimal agar tidak 404 dan tetap konsisten.
-function getAllFarmers(seller: SellerFarmer | null): Farmer[] {
-  const known = new Set(mockFarmers.map((f) => f.id));
-  const extra: Farmer[] = mockProducts
-    .filter((p) => !known.has(p.farmerId))
-    .filter(
-      (p, i, arr) => arr.findIndex((x) => x.farmerId === p.farmerId) === i
-    )
-    .map((p) => ({
-      id: p.farmerId,
-      name: p.farmerName,
-      location: p.location,
-      verified: p.farmerVerified,
-      rating: p.farmerRating,
-      reviewCount: p.farmerReviewCount,
-      completedOrders: p.farmerReviewCount,
-      responseRate: 90,
-      memberSince: "-",
-      commodities: [p.category],
-      description: `Petani ${p.name} dari ${p.location}.`,
-      farmSize: "-",
-      certifications: [],
-      upcomingHarvests: [],
-    }));
-  // Akun seller perangkat ini (dibuat saat application disetujui).
-  const mine: Farmer[] =
-    seller && !known.has(seller.id)
-      ? [
-          {
-            id: seller.id,
-            name: seller.name,
-            avatar: seller.avatar,
-            location: seller.location,
-            verified: true,
-            rating: 0,
-            reviewCount: 0,
-            completedOrders: 0,
-            responseRate: 100,
-            memberSince: seller.memberSince,
-            commodities: seller.commodities,
-            description: seller.description,
-            farmSize: seller.farmSize ?? "-",
-            certifications: [],
-            upcomingHarvests: [],
-          },
-        ]
-      : [];
-  return [...mine, ...mockFarmers, ...extra];
+function sellerToApi(seller: SellerFarmer): ApiFarmer {
+  return {
+    id: seller.id,
+    name: seller.name,
+    location: seller.location,
+    verified: true,
+    rating: 0,
+    reviewCount: 0,
+    completedOrders: 0,
+    responseRate: 100,
+    memberSince: seller.memberSince,
+    description: seller.description,
+    farmSize: seller.farmSize ?? null,
+    avatar: seller.avatar ?? null,
+    commodities: seller.commodities,
+    certifications: [],
+    upcomingHarvests: [],
+    productCount: 0,
+  };
 }
 
 export default function PetaniPage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const [farmers, setFarmers] = useState<ApiFarmer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const sellerFarmer = useSellerStore((s) => s.farmer);
-  const farmers = useMemo(() => getAllFarmers(sellerFarmer), [sellerFarmer]);
+  const reqId = useRef(0);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return farmers;
-    return farmers.filter(
-      (f) =>
-        f.name.toLowerCase().includes(q) ||
-        f.location.toLowerCase().includes(q) ||
-        f.commodities.some((c) => c.toLowerCase().includes(q))
-    );
-  }, [farmers, query]);
+  useEffect(() => {
+    const id = ++reqId.current;
+    const ctrl = new AbortController();
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const params = new URLSearchParams({ limit: "50" });
+        if (query.trim()) params.set("q", query.trim());
+        const res = await apiFetch<{ data: ApiFarmer[]; meta: ApiMeta }>(
+          `/api/farmers?${params.toString()}`,
+          { signal: ctrl.signal }
+        );
+        if (reqId.current !== id) return;
+        setFarmers(res.data);
+      } catch (err) {
+        if (reqId.current !== id) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setLoadError(err instanceof Error ? err.message : "Gagal memuat petani.");
+        setFarmers([]);
+      } finally {
+        if (reqId.current === id) setLoading(false);
+      }
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [query]);
+
+  // Akun seller perangkat ini tampil paling atas.
+  const visible =
+    sellerFarmer && !farmers.some((f) => f.id === sellerFarmer.id)
+      ? [sellerToApi(sellerFarmer), ...farmers]
+      : farmers;
+
+  const retry = () => {
+    setLoadError(null);
+    setLoading(true);
+    const id = ++reqId.current;
+    const params = new URLSearchParams({ limit: "50" });
+    if (query.trim()) params.set("q", query.trim());
+    apiFetch<{ data: ApiFarmer[]; meta: ApiMeta }>(`/api/farmers?${params.toString()}`)
+      .then((res) => {
+        if (reqId.current !== id) return;
+        setFarmers(res.data);
+      })
+      .catch((err: unknown) => {
+        if (reqId.current !== id) return;
+        setLoadError(err instanceof Error ? err.message : "Gagal memuat petani.");
+      })
+      .finally(() => {
+        if (reqId.current === id) setLoading(false);
+      });
+  };
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -105,12 +124,32 @@ export default function PetaniPage() {
             />
           </div>
 
-          {filtered.length > 0 ? (
+          {loading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6" aria-busy="true">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="space-y-3">
+                  <Skeleton className="h-24 w-full rounded-2xl" />
+                  <Skeleton className="h-4 w-2/3" />
+                </div>
+              ))}
+            </div>
+          ) : loadError ? (
+            <div className="text-center py-16">
+              <h3 className="text-lg font-semibold text-foreground mb-2">
+                Petani gagal dimuat.
+              </h3>
+              <p className="text-muted-foreground mb-6">{loadError}</p>
+              <Button variant="outline" onClick={retry}>
+                <Loader2 className="h-4 w-4 mr-2" />
+                Coba Lagi
+              </Button>
+            </div>
+          ) : visible.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
-              {filtered.map((f) => (
+              {visible.map((f) => (
                 <FarmerCard
                   key={f.id}
-                  image={f.avatar}
+                  image={f.avatar ?? undefined}
                   name={f.name}
                   location={f.location}
                   verified={f.verified}

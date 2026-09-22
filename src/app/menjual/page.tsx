@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -12,14 +12,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   COMMODITY_OPTIONS,
-  SELLER_APPLICATION_LABEL,
   sellerApplicationSchema,
   type SellerApplicationForm,
 } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
+import { apiFetch, apiPost, type ApiApplication } from "@/lib/api";
+import { useAuthStore } from "@/store/auth";
 import { Check, ChevronRight, ClipboardList, Loader2, Store } from "lucide-react";
 
 const STEPS = ["Data dikirim", "Pengajuan diterima", "Sedang ditinjau", "Disetujui"] as const;
@@ -37,6 +38,14 @@ function statusStepIndex(status: string): number {
   }
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  draft: "Draf",
+  submitted: "Terkirim",
+  under_review: "Sedang ditinjau",
+  approved: "Disetujui",
+  rejected: "Perlu diperbaiki",
+};
+
 function FieldError({ message }: { message?: string }) {
   if (!message) return null;
   return <p className="text-sm text-destructive mt-1">{message}</p>;
@@ -44,63 +53,100 @@ function FieldError({ message }: { message?: string }) {
 
 export default function MenjualPage() {
   const router = useRouter();
-  const application = useSellerStore((s) => s.application);
-  const farmer = useSellerStore((s) => s.farmer);
-  const isHydrated = useSellerStore((s) => s.isHydrated);
-  const saveDraft = useSellerStore((s) => s.saveDraft);
-  const submitApplication = useSellerStore((s) => s.submitApplication);
-  const simulateApprove = useSellerStore((s) => s.simulateApprove);
-  const simulateReject = useSellerStore((s) => s.simulateReject);
-
+  const authStatus = useAuthStore((s) => s.status);
+  const authUser = useAuthStore((s) => s.user);
+  const [application, setApplication] = useState<ApiApplication | null>(null);
+  const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
-  const [rejectError, setRejectError] = useState("");
+  const reqId = useRef(0);
+
+  const load = useCallback(async () => {
+    const id = ++reqId.current;
+    setLoading(true);
+    try {
+      const res = await apiFetch<{ data: ApiApplication[] }>("/api/seller/applications");
+      if (reqId.current !== id) return;
+      setApplication(res.data[0] ?? null);
+    } catch {
+      if (reqId.current !== id) return;
+      setApplication(null);
+    } finally {
+      if (reqId.current === id) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated") {
+      setLoading(false);
+      return;
+    }
+    void load();
+    return () => {
+      reqId.current++;
+    };
+  }, [authStatus, load]);
 
   const form = useForm<SellerApplicationForm>({
     resolver: zodResolver(sellerApplicationSchema),
     mode: "onTouched",
     defaultValues: {
-      fullName: application?.fullName ?? "",
-      phone: application?.phone ?? "",
-      email: application?.email ?? "",
-      location: application?.location ?? "",
-      farmName: application?.farmName ?? "",
-      farmLocation: application?.farmLocation ?? "",
-      commodities: application?.commodities ?? "",
-      description: application?.description ?? "",
-      farmSize: application?.farmSize ?? "",
+      fullName: "",
+      phone: "",
+      email: "",
+      location: "",
+      farmName: "",
+      farmLocation: "",
+      commodities: "",
+      description: "",
+      farmSize: "",
     },
   });
 
-  const editable =
-    application == null || application.status === "draft" || application.status === "rejected";
+  // Prefill saat revisi.
+  useEffect(() => {
+    if (application && (application.status === "draft" || application.status === "rejected")) {
+      form.reset({
+        fullName: application.fullName,
+        phone: application.phone,
+        email: application.email ?? "",
+        location: application.location,
+        farmName: application.farmName,
+        farmLocation: application.farmLocation,
+        commodities: application.commodities,
+        description: application.description,
+        farmSize: application.farmSize ?? "",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [application?.id]);
 
-  const handleSubmit = (data: SellerApplicationForm) => {
-    if (isSubmitting || !editable) return;
+  const editable =
+    !!application &&
+    (application.status === "draft" || application.status === "rejected");
+
+  const handleSubmit = async (data: SellerApplicationForm) => {
+    if (isSubmitting) return;
+    if (authStatus !== "authenticated" || !authUser) {
+      toast.info("Masuk terlebih dahulu untuk mengajukan diri sebagai seller.");
+      router.push(`/login?returnTo=${encodeURIComponent("/menjual")}`);
+      return;
+    }
     setIsSubmitting(true);
     try {
-      saveDraft({ ...data, email: data.email || undefined, farmSize: data.farmSize || undefined });
-      submitApplication();
+      const saved = await apiPost<{ data: ApiApplication }>("/api/seller/applications", {
+        ...(application && editable ? { id: application.id } : {}),
+        ...data,
+        email: data.email || undefined,
+        farmSize: data.farmSize || undefined,
+      });
+      await apiPost(`/api/seller/applications/${encodeURIComponent(saved.data.id)}/submit`, {});
       toast.success("Pengajuan seller terkirim.");
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal mengirim pengajuan.");
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handleApprove = () => {
-    simulateApprove();
-    toast.success("Pengajuan disetujui (demo). Akun seller aktif.");
-  };
-
-  const handleReject = () => {
-    if (rejectReason.trim().length < 5) {
-      setRejectError("Tulis alasan penolakan minimal 5 karakter.");
-      return;
-    }
-    setRejectError("");
-    simulateReject(rejectReason);
-    setRejectReason("");
-    toast.info("Pengajuan ditolak (demo).");
   };
 
   return (
@@ -118,12 +164,24 @@ export default function MenjualPage() {
             </p>
           </div>
 
-          {!isHydrated ? (
+          {loading || authStatus === "loading" ? (
             <div className="space-y-4" aria-busy="true">
-              <div className="h-40 rounded-2xl bg-muted animate-pulse" />
-              <div className="h-64 rounded-2xl bg-muted animate-pulse" />
+              <Skeleton className="h-40 w-full rounded-2xl" />
+              <Skeleton className="h-64 w-full rounded-2xl" />
             </div>
-          ) : editable ? (
+          ) : authStatus === "unauthenticated" ? (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <h2 className="font-semibold text-foreground mb-2">Masuk terlebih dahulu</h2>
+                <p className="text-sm text-muted-foreground mb-6">
+                  Pengajuan seller terhubung ke akun Anda.
+                </p>
+                <Button onClick={() => router.push(`/login?returnTo=${encodeURIComponent("/menjual")}`)}>
+                  Masuk / Daftar
+                </Button>
+              </CardContent>
+            </Card>
+          ) : !application || editable ? (
             <>
               {application?.status === "rejected" && (
                 <Card className="mb-6 border-destructive/40">
@@ -146,7 +204,7 @@ export default function MenjualPage() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  void form.handleSubmit(handleSubmit)(e);
+                  void form.handleSubmit((d) => void handleSubmit(d))(e);
                 }}
                 className="space-y-6"
               >
@@ -207,7 +265,7 @@ export default function MenjualPage() {
                       <div>
                         <Label htmlFor="commodities">Jenis komoditas *</Label>
                         <Select
-                          value={form.watch("commodities")}
+                          value={form.watch("commodities") || undefined}
                           onValueChange={(v) => form.setValue("commodities", v ?? "", { shouldValidate: true })}
                         >
                           <SelectTrigger>
@@ -257,110 +315,86 @@ export default function MenjualPage() {
               </form>
             </>
           ) : (
-            application && (
-              <div className="space-y-6">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Status Pengajuan</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ol className="space-y-3">
+                    {STEPS.map((label, i) => {
+                      const current = statusStepIndex(application.status);
+                      const done = i < current || application.status === "approved";
+                      const active = i === current && application.status !== "approved";
+                      return (
+                        <li key={label} className="flex items-center gap-3">
+                          <span
+                            className={cn(
+                              "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
+                              done
+                                ? "bg-primary text-primary-foreground"
+                                : active
+                                  ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
+                                  : "bg-muted text-muted-foreground"
+                            )}
+                            aria-hidden="true"
+                          >
+                            {done ? <Check className="h-4 w-4" /> : i + 1}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-sm",
+                              done || active ? "font-medium text-foreground" : "text-muted-foreground"
+                            )}
+                          >
+                            {label}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  <p className="mt-4 text-sm">
+                    Status:{" "}
+                    <span className="font-semibold text-foreground">
+                      {STATUS_LABEL[application.status] ?? application.status}
+                    </span>
+                  </p>
+                </CardContent>
+              </Card>
+
+              {application.status === "approved" ? (
                 <Card>
-                  <CardHeader>
-                    <CardTitle>Status Pengajuan</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <ol className="space-y-3">
-                      {STEPS.map((label, i) => {
-                        const current = statusStepIndex(application.status);
-                        const done = i < current || application.status === "approved";
-                        const active = i === current && application.status !== "approved";
-                        return (
-                          <li key={label} className="flex items-center gap-3">
-                            <span
-                              className={cn(
-                                "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
-                                done
-                                  ? "bg-primary text-primary-foreground"
-                                  : active
-                                    ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
-                                    : "bg-muted text-muted-foreground"
-                              )}
-                              aria-hidden="true"
-                            >
-                              {done ? <Check className="h-4 w-4" /> : i + 1}
-                            </span>
-                            <span
-                              className={cn(
-                                "text-sm",
-                                done || active ? "font-medium text-foreground" : "text-muted-foreground"
-                              )}
-                            >
-                              {label}
-                            </span>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                    <p className="mt-4 text-sm">
-                      Status:{" "}
-                      <span className="font-semibold text-foreground">
-                        {SELLER_APPLICATION_LABEL[application.status]}
-                      </span>
+                  <CardContent className="p-6 text-center">
+                    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10">
+                      <Check className="h-7 w-7 text-success" />
+                    </div>
+                    <h2 className="text-xl font-bold text-foreground mb-1">
+                      Pengajuan disetujui!
+                    </h2>
+                    <p className="text-sm text-muted-foreground mb-6">
+                      Akun seller aktif. Kelola produk dan stok dari dashboard.
                     </p>
-                    {application.submittedAt && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Dikirim {new Date(application.submittedAt).toLocaleString("id-ID")}
-                      </p>
-                    )}
+                    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                      <Button onClick={() => router.push("/dashboard")}>Buka Dashboard</Button>
+                      <Button variant="outline" onClick={() => router.push("/marketplace")}>
+                        Lihat Marketplace
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
-
-                {application.status === "approved" && farmer ? (
-                  <Card>
-                    <CardContent className="p-6 text-center">
-                      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10">
-                        <Check className="h-7 w-7 text-success" />
-                      </div>
-                      <h2 className="text-xl font-bold text-foreground mb-1">
-                        Selamat, {farmer.name}!
-                      </h2>
-                      <p className="text-sm text-muted-foreground mb-6">
-                        Akun seller aktif. Kelola produk dan stok dari dashboard.
-                      </p>
-                      <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                        <Button onClick={() => router.push("/dashboard")}>Buka Dashboard</Button>
-                        <Button variant="outline" onClick={() => router.push(`/petani/${farmer.id}`)}>
-                          Lihat Profil Publik
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  <Card className="border-dashed">
-                    <CardContent className="p-5">
-                      <h2 className="font-semibold text-foreground mb-1">
-                        Panel verifikasi (mode demo)
-                      </h2>
-                      <p className="text-sm text-muted-foreground mb-4">
-                        Backend verifikasi manual belum tersedia — tombol di bawah
-                        menggantikan review tim agar alur dapat diuji end-to-end.
-                      </p>
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        <Button onClick={handleApprove}>Simulasikan Persetujuan</Button>
-                      </div>
-                      <div className="mt-4 space-y-2">
-                        <Label htmlFor="rejectReason">Alasan penolakan (untuk uji alur revisi)</Label>
-                        <Input
-                          id="rejectReason"
-                          value={rejectReason}
-                          onChange={(e) => setRejectReason(e.target.value)}
-                          placeholder="Contoh: Data lokasi kebun belum lengkap"
-                        />
-                        {rejectError && <p className="text-sm text-destructive">{rejectError}</p>}
-                        <Button variant="outline" onClick={handleReject}>
-                          Simulasikan Penolakan
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            )
+              ) : (
+                <Card className="border-dashed">
+                  <CardContent className="p-5">
+                    <h2 className="font-semibold text-foreground mb-1">
+                      Menunggu verifikasi tim
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      Pengajuan Anda sedang ditinjau. Status diperbarui otomatis di halaman ini.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           )}
         </div>
       </main>

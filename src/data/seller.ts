@@ -37,6 +37,7 @@ export const SELLER_APPLICATION_LABEL: Record<SellerApplicationStatus, string> =
 
 export interface SellerApplication {
   id: string;
+  userId?: string; // pemilik akun terautentikasi (Sprint 3); undefined = pengajuan anonim lama
   fullName: string;
   phone: string;
   email?: string;
@@ -56,6 +57,7 @@ export interface SellerApplication {
 // -- Farmer milik seller (dibuat saat application disetujui) -----------------
 export interface SellerFarmer {
   id: string;
+  userId?: string; // User 1 ─── 0..1 Farmer (otoritas penuh menunggu backend)
   name: string;
   location: string;
   description: string;

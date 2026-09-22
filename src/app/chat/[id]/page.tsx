@@ -19,6 +19,7 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { getFarmerById } from "@/data/farmers";
 import { getProductById, mockProducts } from "@/data/products";
 import { useChatStore, type ChatMessage } from "@/store/chat";
+import { fetchFarmer } from "@/lib/api";
 import { useSellerStore } from "@/store/seller";
 import { useSellerCatalogStore } from "@/store/seller-catalog";
 import { ChevronLeft, Send } from "lucide-react";
@@ -49,11 +50,13 @@ export default function ChatDetailPage() {
   const receiveMessage = useChatStore((s) => s.receiveMessage);
   const sellerFarmer = useSellerStore((s) => s.farmer);
   const sellerProducts = useSellerCatalogStore((s) => s.products);
+  const [apiFarmer, setApiFarmer] = useState<{ id: string; name: string; avatar?: string } | null>(null);
+  const [resolving, setResolving] = useState(true);
 
   const farmer = useMemo(() => {
     const found = getFarmerById(farmerId);
     if (found) return { id: found.id, name: found.name, avatar: found.avatar };
-    // Seller dari Seller Ecosystem (source of truth: useSellerStore.farmer).
+    // Seller lokal perangkat ini (warisan demo Sprint 1).
     if (sellerFarmer && sellerFarmer.id === farmerId) {
       return { id: sellerFarmer.id, name: sellerFarmer.name, avatar: sellerFarmer.avatar };
     }
@@ -67,8 +70,26 @@ export default function ChatDetailPage() {
     const mine = sellerProducts.find((p) => p.farmerId === farmerId);
     if (mine)
       return { id: mine.farmerId, name: mine.farmerName, avatar: mine.images[0] };
-    return undefined;
-  }, [farmerId, sellerFarmer, sellerProducts]);
+    // Farmer server (otoritas) — resolve async.
+    return apiFarmer;
+  }, [farmerId, sellerFarmer, sellerProducts, apiFarmer]);
+
+  // resolving awal true agar 404 tak berkedip selagi fetch server berjalan;
+  // tak perlu direset saat farmer lokal ketemu (UI loading hanya saat !farmer).
+  useEffect(() => {
+    if (farmer) return;
+    const ctrl = new AbortController();
+    fetchFarmer(farmerId, ctrl.signal)
+      .then((f) => {
+        if (ctrl.signal.aborted) return;
+        if (f) setApiFarmer({ id: f.id, name: f.name, avatar: f.avatar ?? undefined });
+        setResolving(false);
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setResolving(false);
+      });
+    return () => ctrl.abort();
+  }, [farmerId, farmer]);
 
   const contextProduct = useMemo(
     () => (productId ? (getProductById(productId) ?? sellerProducts.find((p) => p.id === productId)) : undefined),
@@ -86,6 +107,17 @@ export default function ChatDetailPage() {
   }, []);
 
   if (!farmer) {
+    if (resolving) {
+      return (
+        <div className="flex flex-col min-h-screen bg-background">
+          <Navbar />
+          <main className="flex-1 flex items-center justify-center" aria-busy="true">
+            <p className="text-sm text-muted-foreground">Memuat percakapan...</p>
+          </main>
+          <Footer />
+        </div>
+      );
+    }
     notFound();
   }
 

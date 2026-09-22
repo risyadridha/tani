@@ -5,12 +5,14 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useCartStore } from "@/store/cart";
+import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -44,6 +46,9 @@ export function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const openCart = useCartStore((s) => s.openCart);
+  const authStatus = useAuthStore((s) => s.status);
+  const authUser = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [desktopQuery, setDesktopQuery] = useState("");
@@ -58,7 +63,7 @@ export function Navbar() {
   return (
     <>
       {/* Desktop Navbar */}
-      <header className="hidden lg:fixed lg:top-0 lg:left-0 lg:right-0 lg:z-50 lg:border-b lg:border-border lg:bg-background/95 lg:backdrop-blur-sm">
+      <header className="hidden lg:block lg:fixed lg:top-0 lg:left-0 lg:right-0 lg:z-50 lg:border-b lg:border-border lg:bg-background/95 lg:backdrop-blur-sm">
         <div className="container-wide h-16 flex items-center justify-between">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2" aria-label="TaniHub Home">
@@ -130,48 +135,77 @@ export function Navbar() {
                 <User className="h-5 w-5" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel className="font-semibold">Akun Saya</DropdownMenuLabel>
+                <DropdownMenuGroup>
+                <DropdownMenuLabel className="font-semibold">
+                  {authStatus === "authenticated" && authUser ? authUser.name : "Akun Saya"}
+                </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <Link href="/dashboard" className="flex h-full w-full">
-                    Dashboard
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Link href="/pesanan" className="flex h-full w-full">
-                    Pesanan Saya
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Link href="/disimpan" className="flex h-full w-full">
-                    Disimpan
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <Link href="/menjual" className="flex h-full w-full">
-                    Mulai Menjual
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Link href="/kelola-produk" className="flex h-full w-full">
-                    Kelola Produk
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Link href="/inventaris" className="flex h-full w-full">
-                    Inventaris
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <Link href="/pengaturan" className="flex h-full w-full">
-                    Pengaturan
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem className="text-destructive focus:text-destructive-foreground">
-                  Keluar
-                </DropdownMenuItem>
+                {authStatus === "authenticated" ? (
+                  <>
+                    <DropdownMenuItem>
+                      <Link href="/dashboard" className="flex h-full w-full">
+                        Dashboard
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/pesanan" className="flex h-full w-full">
+                        Pesanan Saya
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/disimpan" className="flex h-full w-full">
+                        Disimpan
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem>
+                      <Link href="/menjual" className="flex h-full w-full">
+                        Mulai Menjual
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/dashboard/pesanan" className="flex h-full w-full">
+                        Pesanan Masuk
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/kelola-produk" className="flex h-full w-full">
+                        Kelola Produk
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/inventaris" className="flex h-full w-full">
+                        Inventaris
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem>
+                      <Link href="/pengaturan" className="flex h-full w-full">
+                        Pengaturan
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive-foreground"
+                      onClick={() => void logout()}
+                    >
+                      Keluar
+                    </DropdownMenuItem>
+                  </>
+                ) : (
+                  <>
+                    <DropdownMenuItem>
+                      <Link href="/login" className="flex h-full w-full">
+                        Masuk
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                      <Link href="/register" className="flex h-full w-full">
+                        Daftar
+                      </Link>
+                    </DropdownMenuItem>
+                  </>
+                )}
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -211,7 +245,7 @@ export function Navbar() {
               <SheetTrigger className="h-10 w-10 inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50" aria-label="Menu">
                 <Menu className="h-5 w-5" />
               </SheetTrigger>
-              <SheetContent side="right" className="w-72 p-0">
+              <SheetContent side="right" className="w-72 p-0" showCloseButton={false}>
                 <div className="flex items-center justify-between p-4 border-b border-border">
                   <h3 className="font-semibold">Menu</h3>
                   <Button
@@ -261,6 +295,36 @@ export function Navbar() {
                   >
                     Mulai Menjual
                   </Link>
+                  <hr className="my-4 border-border" />
+                  {authStatus === "authenticated" ? (
+                    <button
+                      type="button"
+                      className="flex w-full items-center px-3 py-2.5 text-sm font-medium rounded-lg text-destructive hover:bg-muted"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        void logout();
+                      }}
+                    >
+                      Keluar{authUser ? ` (${authUser.name})` : ""}
+                    </button>
+                  ) : (
+                    <>
+                      <Link
+                        href="/login"
+                        className="flex items-center px-3 py-2.5 text-sm font-medium rounded-lg text-foreground hover:bg-muted"
+                        onClick={() => setMobileMenuOpen(false)}
+                      >
+                        Masuk
+                      </Link>
+                      <Link
+                        href="/register"
+                        className="flex items-center px-3 py-2.5 text-sm font-medium rounded-lg text-primary hover:bg-primary/10"
+                        onClick={() => setMobileMenuOpen(false)}
+                      >
+                        Daftar
+                      </Link>
+                    </>
+                  )}
                 </nav>
               </SheetContent>
             </Sheet>

@@ -230,7 +230,7 @@ export interface SellerMetrics {
   inventoryValue: number;
 }
 
-export function computeSellerMetrics(products: SellerProduct[]): SellerMetrics {
+export function computeSellerMetrics(products: Pick<SellerProduct, "status" | "stock" | "price">[]): SellerMetrics {
   let activeProducts = 0;
   let draftProducts = 0;
   let totalStock = 0;
@@ -251,7 +251,7 @@ export function computeSellerMetrics(products: SellerProduct[]): SellerMetrics {
   return { activeProducts, draftProducts, totalStock, lowStockCount, outOfStockCount, inventoryValue };
 }
 
-export function getLowStockProducts(products: SellerProduct[]): SellerProduct[] {
+export function getLowStockProducts<T extends Pick<SellerProduct, "status" | "stock">>(products: T[]): T[] {
   return products.filter(
     (p) => p.status === "active" && p.stock <= LOW_STOCK_THRESHOLD
   );

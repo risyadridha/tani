@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
@@ -8,42 +9,91 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/tanihub/stat-card";
 import { StatusBadge } from "@/components/tanihub/status-badge";
+import { OrderStateBadge } from "@/components/tanihub/order-badges";
 import { SellerGate, SellerNav } from "@/components/tanihub/seller-nav";
 import { formatCurrency } from "@/lib/utils";
 import { LOW_STOCK_THRESHOLD, getEffectiveStatus } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
+import type { StoredProductStatus } from "@/data/seller";
+import { useSellerIdentity } from "@/components/tanihub/seller-nav";
+import { useAuthStore } from "@/store/auth";
+import { apiFetch, type ApiMeta, type ApiOrderSummary, type ApiProduct } from "@/lib/api";
+import type { OrderStatus } from "@/data/order";
 import {
   computeSellerMetrics,
   getLowStockProducts,
-  useSellerCatalogStore,
 } from "@/store/seller-catalog";
 import { BarChart3, Boxes, PackagePlus, TriangleAlert, Wallet } from "lucide-react";
 
+type ProductBadge = "active" | "low_stock" | "out_of_stock" | "inactive" | "draft";
+
+function apiEffective(p: { status: string; stock: number }): ProductBadge {
+  if (p.status !== "active") return p.status as ProductBadge;
+  if (p.stock <= 0) return "out_of_stock";
+  if (p.stock <= LOW_STOCK_THRESHOLD) return "low_stock";
+  return "active";
+}
+
 function DashboardContent() {
   const router = useRouter();
-  const farmer = useSellerStore((s) => s.farmer);
-  const products = useSellerCatalogStore((s) => s.products);
-  const isHydrated = useSellerCatalogStore((s) => s.isHydrated);
-  const myProducts = farmer ? products.filter((p) => p.farmerId === farmer.id) : [];
-  const metrics = computeSellerMetrics(myProducts);
-  const lowStock = getLowStockProducts(myProducts);
+  const identity = useSellerIdentity();
+  const authUser = useAuthStore((s) => s.user);
+  const [products, setProducts] = useState<ApiProduct[]>([]);
+  const [recentOrders, setRecentOrders] = useState<ApiOrderSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const reqId = useRef(0);
 
-  if (!farmer) return null;
+  useEffect(() => {
+    const id = ++reqId.current;
+    Promise.all([
+      apiFetch<{ data: ApiProduct[]; meta: ApiMeta }>("/api/products?mine=true&limit=50"),
+      apiFetch<{ data: ApiOrderSummary[]; meta: ApiMeta }>("/api/farmer/orders?limit=5"),
+    ])
+      .then(([p, o]) => {
+        if (reqId.current !== id) return;
+        setProducts(p.data);
+        setRecentOrders(o.data);
+      })
+      .catch(() => {
+        if (reqId.current !== id) return;
+        setProducts([]);
+        setRecentOrders([]);
+      })
+      .finally(() => {
+        if (reqId.current === id) setLoading(false);
+      });
+    return () => {
+      reqId.current++;
+    };
+  }, []);
+
+  // Metrik dihitung dari data server (bentuk minimal yang dibutuhkan).
+  const metricInput = products.map((p) => ({
+    status: p.status as StoredProductStatus,
+    stock: p.stock,
+    price: p.price,
+    name: p.name,
+    unit: p.unit,
+    id: p.id,
+  }));
+  const metrics = computeSellerMetrics(metricInput);
+  const lowStock = getLowStockProducts(metricInput);
+
+  if (!identity) return null;
 
   return (
     <div className="container-wide max-w-5xl space-y-8">
       <div>
         <h1 className="text-3xl lg:text-4xl font-bold text-foreground">
-          Selamat datang, {farmer.name}
+          Selamat datang, {authUser?.name ?? "Seller"}
         </h1>
         <p className="text-muted-foreground mt-1">
-          Berikut perkembangan usaha {farmer.farmName}.
+          Berikut perkembangan usaha {identity.farmName}.
         </p>
       </div>
 
-      <SellerNav farmerId={farmer.id} />
+      <SellerNav farmerId={identity.farmerId} />
 
-      {!isHydrated ? (
+      {loading ? (
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4" aria-busy="true">
           {[0, 1, 2, 3].map((i) => (
             <div key={i} className="h-28 rounded-2xl bg-muted animate-pulse" />
@@ -74,7 +124,7 @@ function DashboardContent() {
             />
           </div>
 
-          {myProducts.length === 0 ? (
+          {loading ? null : products.length === 0 ? (
             <Card>
               <CardContent className="p-8 text-center">
                 <h2 className="font-semibold text-foreground mb-2">
@@ -132,7 +182,7 @@ function DashboardContent() {
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {myProducts.slice(0, 5).map((p) => (
+                    {products.slice(0, 5).map((p) => (
                       <li key={p.id} className="flex items-center justify-between gap-3">
                         <Link
                           href={`/kelola-produk/${p.id}/edit`}
@@ -140,7 +190,7 @@ function DashboardContent() {
                         >
                           {p.name}
                         </Link>
-                        <StatusBadge status={getEffectiveStatus(p)} type="product" />
+                        <StatusBadge status={apiEffective(p)} type="product" />
                       </li>
                     ))}
                   </ul>
@@ -172,10 +222,33 @@ function DashboardContent() {
                   <CardTitle className="text-base">Pesanan Terbaru</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    Belum ada pesanan masuk. Integrasi order seller belum tersedia
-                    di versi ini.
-                  </p>
+                  {recentOrders.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      Belum ada pesanan masuk.
+                    </p>
+                  ) : (
+                    <ul className="space-y-3">
+                      {recentOrders.map((o) => (
+                        <li key={o.id} className="flex items-center justify-between gap-3">
+                          <Link
+                            href={`/pesanan/${o.id}`}
+                            className="text-sm font-medium text-foreground truncate hover:underline"
+                          >
+                            {o.id}
+                          </Link>
+                          <OrderStateBadge status={o.status as OrderStatus} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                    onClick={() => router.push("/dashboard/pesanan")}
+                  >
+                    Semua Pesanan
+                  </Button>
                 </CardContent>
               </Card>
             </div>

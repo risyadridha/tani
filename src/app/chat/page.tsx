@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/tanihub/navbar";
@@ -11,8 +11,9 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getFarmerById } from "@/data/farmers";
 import { mockProducts } from "@/data/products";
 import type { SellerFarmer } from "@/data/seller";
-import { useChatStore } from "@/store/chat";
 import { useSellerStore } from "@/store/seller";
+import { fetchFarmer } from "@/lib/api";
+import { useChatStore } from "@/store/chat";
 import { MessageSquare, ChevronRight } from "lucide-react";
 
 function resolveFarmerName(
@@ -35,6 +36,8 @@ export default function ChatListPage() {
   const router = useRouter();
   const messagesByFarmer = useChatStore((s) => s.messagesByFarmer);
   const sellerFarmer = useSellerStore((s) => s.farmer);
+  // Nama farmer server yang tak dikenal lokal — diisi async sekali per id.
+  const [apiNames, setApiNames] = useState<Record<string, { name: string; avatar?: string }>>({});
 
   const conversations = useMemo(() => {
     return Object.entries(messagesByFarmer)
@@ -49,6 +52,31 @@ export default function ChatListPage() {
           new Date(a.lastMessage.createdAt).getTime()
       );
   }, [messagesByFarmer]);
+
+  useEffect(() => {
+    const unknownIds = conversations
+      .map((c) => c.farmerId)
+      .filter(
+        (id) =>
+          !apiNames[id] &&
+          !getFarmerById(id) &&
+          !(sellerFarmer && sellerFarmer.id === id) &&
+          !mockProducts.some((p) => p.farmerId === id)
+      );
+    if (unknownIds.length === 0) return;
+    const ctrl = new AbortController();
+    void Promise.all(unknownIds.map((id) => fetchFarmer(id, ctrl.signal))).then((results) => {
+      if (ctrl.signal.aborted) return;
+      setApiNames((prev) => {
+        const next = { ...prev };
+        results.forEach((f, i) => {
+          if (f) next[unknownIds[i]] = { name: f.name, avatar: f.avatar ?? undefined };
+        });
+        return next;
+      });
+    });
+    return () => ctrl.abort();
+  }, [conversations, sellerFarmer, apiNames]);
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -86,7 +114,8 @@ export default function ChatListPage() {
           ) : (
             <div className="space-y-3">
               {conversations.map((c) => {
-                const farmer = resolveFarmerName(c.farmerId, sellerFarmer);
+                const local = resolveFarmerName(c.farmerId, sellerFarmer);
+                const farmer = apiNames[c.farmerId] ?? local;
                 return (
                   <Link key={c.farmerId} href={`/chat/${c.farmerId}`}>
                     <Card className="hover:shadow-subtle-hover transition-shadow">

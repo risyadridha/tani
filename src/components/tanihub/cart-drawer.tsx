@@ -1,34 +1,57 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useCartStore } from "@/store/cart";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, productImage } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
 import { Plus, Minus, Trash2, X, Package, Truck, CreditCard } from "lucide-react";
 
 export function CartDrawer() {
-  const { items, isOpen, closeCart, removeItem, updateQuantity, getSubtotal, getTotalItems } = useCartStore();
+  const { items, isOpen, closeCart, removeItem, removeByProductIds, updateQuantity, getSubtotal, getTotalItems } = useCartStore();
   const router = useRouter();
   const subtotal = getSubtotal();
   const totalItems = getTotalItems();
   const shipping = subtotal > 500000 ? 0 : 25000;
   const serviceFee = Math.round(subtotal * 0.02);
   const total = subtotal + shipping + serviceFee;
+  const [notice, setNotice] = useState<string | null>(null);
+  const [unknownIds, setUnknownIds] = useState<string[]>([]);
+  const revalidate = useCartStore((s) => s.revalidate);
+
+  // Reset notice saat drawer ditutup (event handler, bukan effect).
+  const handleClose = () => {
+    setNotice(null);
+    setUnknownIds([]);
+    closeCart();
+  };
+
+  // Revalidasi snapshot saat drawer dibuka (harga/stok server adalah otoritas).
+  useEffect(() => {
+    if (!isOpen) return;
+    void revalidate().then((r) => {
+      if (r.unknownProductIds.length > 0) {
+        setUnknownIds(r.unknownProductIds);
+      } else if (r.changed) {
+        setNotice("Harga/stok diperbarui mengikuti data terbaru.");
+      }
+    });
+  }, [isOpen, revalidate]);
 
   if (items.length === 0) {
     return (
-      <Sheet open={isOpen} onOpenChange={closeCart}>
-        <SheetContent side="right" className="w-full sm:max-w-md lg:max-w-lg p-0">
+      <Sheet open={isOpen} onOpenChange={(open) => { if (!open) handleClose(); }}>
+        <SheetContent side="right" className="w-full sm:max-w-md lg:max-w-lg p-0" showCloseButton={false}>
           <SheetHeader className="p-6 border-b border-border">
             <div className="flex items-center justify-between">
               <div>
                 <SheetTitle>Keranjang Belanja</SheetTitle>
                 <SheetDescription>{totalItems} item</SheetDescription>
               </div>
-              <button onClick={closeCart} className="p-1 hover:bg-muted rounded-lg transition-colors" aria-label="Tutup keranjang">
+              <button onClick={handleClose} className="p-1 hover:bg-muted rounded-lg transition-colors" aria-label="Tutup keranjang">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -37,7 +60,7 @@ export function CartDrawer() {
             <Package className="h-16 w-16 text-muted-foreground/50 mb-4" />
             <h3 className="text-lg font-semibold text-foreground mb-2">Keranjang Kosong</h3>
             <p className="text-muted-foreground mb-6">Belum ada produk di keranjang Anda</p>
-            <Button onClick={() => { closeCart(); router.push("/marketplace"); }} className="w-full sm:w-auto">
+            <Button onClick={() => { handleClose(); router.push("/marketplace"); }} className="w-full sm:w-auto">
               Mulai Belanja
             </Button>
           </div>
@@ -47,15 +70,15 @@ export function CartDrawer() {
   }
 
   return (
-    <Sheet open={isOpen} onOpenChange={closeCart}>
-      <SheetContent side="right" className="w-full sm:max-w-md lg:max-w-lg p-0 flex flex-col h-[calc(100%-2rem)] max-h-[calc(100%-2rem)]">
+    <Sheet open={isOpen} onOpenChange={(open) => { if (!open) handleClose(); }}>
+      <SheetContent side="right" className="w-full sm:max-w-md lg:max-w-lg p-0 flex flex-col h-[calc(100%-2rem)] max-h-[calc(100%-2rem)]" showCloseButton={false}>
         <SheetHeader className="p-6 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between">
             <div>
               <SheetTitle>Keranjang Belanja</SheetTitle>
               <SheetDescription>{totalItems} item</SheetDescription>
             </div>
-            <button onClick={closeCart} className="p-1 hover:bg-muted rounded-lg transition-colors" aria-label="Tutup keranjang">
+            <button onClick={handleClose} className="p-1 hover:bg-muted rounded-lg transition-colors" aria-label="Tutup keranjang">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -63,11 +86,31 @@ export function CartDrawer() {
 
         {/* Cart Items */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {notice && (
+            <p role="status" className="text-xs text-muted-foreground bg-muted/50 rounded-lg px-3 py-2">
+              {notice}
+            </p>
+          )}
+          {unknownIds.length > 0 && (
+            <div className="text-xs bg-destructive/10 text-destructive rounded-lg px-3 py-2 space-y-2">
+              <p>{unknownIds.length} produk tak dikenal server (dihapus/diubah) dan tak bisa dibeli.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  removeByProductIds(unknownIds);
+                  setUnknownIds([]);
+                }}
+              >
+                Hapus dari keranjang
+              </Button>
+            </div>
+          )}
           {items.map((item) => (
             <div key={item.id} className="flex gap-3">
               <div className="relative h-20 w-20 flex-shrink-0 rounded-xl overflow-hidden bg-muted">
                 <Image
-                  src={item.product.images[0]}
+                  src={productImage(item.product.images)}
                   alt={item.product.name}
                   fill
                   className="object-cover"
@@ -154,7 +197,7 @@ export function CartDrawer() {
             </p>
           )}
 
-          <Button className="w-full h-12 text-lg" onClick={() => { closeCart(); router.push("/checkout"); }}>
+          <Button className="w-full h-12 text-lg" onClick={() => { handleClose(); router.push("/checkout"); }}>
             Checkout
           </Button>
         </div>

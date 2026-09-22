@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
@@ -11,13 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/tanihub/status-badge";
-import { SellerGate, SellerNav } from "@/components/tanihub/seller-nav";
+import { SellerGate, SellerNav, useSellerIdentity } from "@/components/tanihub/seller-nav";
 import { formatCurrency } from "@/lib/utils";
-import { getEffectiveStatus, type EffectiveProductStatus } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
-import { PackagePlus, Pencil, Search } from "lucide-react";
+import { LOW_STOCK_THRESHOLD } from "@/data/seller";
+import { apiFetch, apiPatch, type ApiMeta, type ApiProduct } from "@/lib/api";
+import { PackagePlus, Pencil, Search, Loader2 } from "lucide-react";
+import type { EffectiveProductStatus } from "@/data/seller";
 
 type Filter = "semua" | EffectiveProductStatus;
 
@@ -30,36 +31,87 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: "inactive", label: "Nonaktif" },
 ];
 
+function effective(p: ApiProduct): EffectiveProductStatus {
+  if (p.status !== "active") return p.status as EffectiveProductStatus;
+  if (p.stock <= 0) return "out_of_stock";
+  if (p.stock <= LOW_STOCK_THRESHOLD) return "low_stock";
+  return "active";
+}
+
 function ManageContent() {
   const router = useRouter();
-  const farmer = useSellerStore((s) => s.farmer);
-  const products = useSellerCatalogStore((s) => s.products);
-  const isHydrated = useSellerCatalogStore((s) => s.isHydrated);
-  const setProductStatus = useSellerCatalogStore((s) => s.setProductStatus);
+  const identity = useSellerIdentity();
+  const [products, setProducts] = useState<ApiProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("semua");
+  const reqId = useRef(0);
 
-  const myProducts = useMemo(
-    () => (farmer ? products.filter((p) => p.farmerId === farmer.id) : []),
-    [products, farmer]
-  );
+  const load = useCallback(async () => {
+    const id = ++reqId.current;
+    try {
+      const res = await apiFetch<{ data: ApiProduct[]; meta: ApiMeta }>(
+        "/api/products?mine=true&limit=50"
+      );
+      if (reqId.current !== id) return;
+      setProducts(res.data);
+    } catch (err) {
+      if (reqId.current !== id) return;
+      setLoadError(err instanceof Error ? err.message : "Gagal memuat produk.");
+    } finally {
+      if (reqId.current === id) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const id = ++reqId.current;
+    apiFetch<{ data: ApiProduct[]; meta: ApiMeta }>("/api/products?mine=true&limit=50").then(
+      (res) => {
+        if (reqId.current !== id) return;
+        setProducts(res.data);
+        setLoadError(null);
+        setLoading(false);
+      },
+      (err: unknown) => {
+        if (reqId.current !== id) return;
+        setLoadError(err instanceof Error ? err.message : "Gagal memuat produk.");
+        setProducts([]);
+        setLoading(false);
+      }
+    );
+    return () => {
+      reqId.current++;
+    };
+  }, []);
+
+  // Dipanggil dari event handler (bukan effect): boleh set state sinkron.
+  const retry = () => {
+    setLoading(true);
+    setLoadError(null);
+    void load();
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return myProducts.filter((p) => {
-      if (filter !== "semua" && getEffectiveStatus(p) !== filter) return false;
+    return products.filter((p) => {
+      if (filter !== "semua" && effective(p) !== filter) return false;
       if (!q) return true;
       return p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
     });
-  }, [myProducts, query, filter]);
+  }, [products, query, filter]);
 
-  if (!farmer) return null;
+  if (!identity) return null;
 
-  const toggleActive = (id: string, status: string) => {
+  const toggleActive = async (id: string, status: string) => {
     const next = status === "active" ? "inactive" : "active";
-    const ok = setProductStatus(id, farmer.id, next as "active" | "inactive");
-    if (ok) toast.success(next === "active" ? "Produk diaktifkan." : "Produk dinonaktifkan.");
-    else toast.error("Gagal mengubah status produk.");
+    try {
+      await apiPatch<{ data: ApiProduct }>(`/api/products/${encodeURIComponent(id)}`, { status: next });
+      toast.success(next === "active" ? "Produk diaktifkan." : "Produk dinonaktifkan.");
+      void load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal mengubah status.");
+    }
   };
 
   return (
@@ -68,7 +120,7 @@ function ManageContent() {
         <div>
           <h1 className="text-3xl lg:text-4xl font-bold text-foreground">Produk Saya</h1>
           <p className="text-muted-foreground mt-1">
-            {myProducts.length} produk • kelola, ubah status, dan atur stok.
+            {products.length} produk • kelola, ubah status, dan atur stok.
           </p>
         </div>
         <Button onClick={() => router.push("/kelola-produk/baru")}>
@@ -77,7 +129,7 @@ function ManageContent() {
         </Button>
       </div>
 
-      <SellerNav farmerId={farmer.id} />
+      <SellerNav farmerId={identity.farmerId} />
 
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -104,20 +156,35 @@ function ManageContent() {
         </Select>
       </div>
 
-      {!isHydrated ? (
-        <div className="h-48 rounded-2xl bg-muted animate-pulse" aria-busy="true" />
+      {loading ? (
+        <div className="space-y-3" aria-busy="true">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-20 w-full rounded-2xl" />
+          ))}
+        </div>
+      ) : loadError ? (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <h2 className="font-semibold text-foreground mb-2">Produk gagal dimuat.</h2>
+            <p className="text-sm text-muted-foreground mb-6">{loadError}</p>
+            <Button variant="outline" onClick={retry}>
+              <Loader2 className="h-4 w-4 mr-2" />
+              Coba Lagi
+            </Button>
+          </CardContent>
+        </Card>
       ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="p-8 text-center">
             <h2 className="font-semibold text-foreground mb-2">
-              {myProducts.length === 0 ? "Belum ada produk." : "Tidak ada produk yang cocok."}
+              {products.length === 0 ? "Belum ada produk." : "Tidak ada produk yang cocok."}
             </h2>
             <p className="text-sm text-muted-foreground mb-6">
-              {myProducts.length === 0
+              {products.length === 0
                 ? "Tambahkan produk pertama agar muncul di marketplace."
                 : "Coba ubah kata kunci atau filter."}
             </p>
-            {myProducts.length === 0 && (
+            {products.length === 0 && (
               <Button onClick={() => router.push("/kelola-produk/baru")}>
                 <PackagePlus className="h-4 w-4 mr-2" />
                 Tambah Produk
@@ -145,7 +212,7 @@ function ManageContent() {
                     <td className="p-4">
                       <div className="flex items-center gap-3">
                         <div className="relative h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-muted">
-                          <Image src={p.images[0]} alt={p.name} fill className="object-cover" sizes="48px" />
+                          <Image src={p.image} alt={p.name} fill className="object-cover" sizes="48px" />
                         </div>
                         <div className="min-w-0">
                           <Link
@@ -165,7 +232,7 @@ function ManageContent() {
                       {p.stock} {p.unit}
                     </td>
                     <td className="p-4">
-                      <StatusBadge status={getEffectiveStatus(p)} type="product" />
+                      <StatusBadge status={effective(p)} type="product" />
                     </td>
                     <td className="p-4">
                       <div className="flex justify-end gap-2">
@@ -183,7 +250,7 @@ function ManageContent() {
                         >
                           Stok
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => toggleActive(p.id, p.status)}>
+                        <Button variant="ghost" size="sm" onClick={() => void toggleActive(p.id, p.status)}>
                           {p.status === "active" ? "Nonaktifkan" : "Aktifkan"}
                         </Button>
                       </div>
@@ -201,7 +268,7 @@ function ManageContent() {
                 <CardContent className="p-4">
                   <div className="flex items-center gap-3 mb-3">
                     <div className="relative h-14 w-14 flex-shrink-0 overflow-hidden rounded-lg bg-muted">
-                      <Image src={p.images[0]} alt={p.name} fill className="object-cover" sizes="56px" />
+                      <Image src={p.image} alt={p.name} fill className="object-cover" sizes="56px" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-foreground truncate">{p.name}</p>
@@ -209,7 +276,7 @@ function ManageContent() {
                         {formatCurrency(p.price)} / {p.unit} • {p.stock} {p.unit}
                       </p>
                     </div>
-                    <StatusBadge status={getEffectiveStatus(p)} type="product" />
+                    <StatusBadge status={effective(p)} type="product" />
                   </div>
                   <div className="flex gap-2">
                     <Button

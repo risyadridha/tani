@@ -10,8 +10,10 @@ type OrderStatus =
   | "pending"
   | "confirmed"
   | "processing"
+  | "packed"
   | "shipped"
   | "delivered"
+  | "completed"
   | "cancelled"
   | "refunded"
   | "disputed";
@@ -24,8 +26,10 @@ const orderStatusConfig: Record<OrderStatus, { label: string; variant: BadgeVari
   pending: { label: "Menunggu", variant: "secondary" },
   confirmed: { label: "Dikonfirmasi", variant: "default" },
   processing: { label: "Diproses", variant: "outline" },
+  packed: { label: "Dikemas", variant: "outline" },
   shipped: { label: "Dikirim", variant: "default" },
-  delivered: { label: "Selesai", variant: "secondary" },
+  delivered: { label: "Sampai", variant: "secondary" },
+  completed: { label: "Selesai", variant: "secondary" },
   cancelled: { label: "Dibatalkan", variant: "destructive" },
   refunded: { label: "Dikembalikan", variant: "destructive" },
   disputed: { label: "Sengketa", variant: "destructive" },

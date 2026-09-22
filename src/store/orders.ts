@@ -2,63 +2,42 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { CartItem } from "@/store/cart";
+import { DEMO_BUYER_ID, type Order } from "@/data/order";
 
-export interface OrderItem {
-  productId: string;
-  name: string;
-  image: string;
-  price: number;
-  unit: string;
-  quantity: number;
-}
-
-export interface Order {
-  id: string;
-  items: OrderItem[];
-  subtotal: number;
-  shipping: number;
-  serviceFee: number;
-  total: number;
-  recipientName: string;
-  city: string;
-  createdAt: string;
-  status: "diproses" | "selesai" | "dibatalkan";
-}
+// ---------------------------------------------------------------------------
+// Sisa store order klien: menampung riwayat lokal lama + klaim sekali ke user
+// login. Create/transition/pay/order-detail SEMUA via API (Sprint 4); fungsi
+// lama yang yatim sudah dipensiunkan (bukan dihapus diam-diam: tidak ada
+// consumer tersisa — terverifikasi via grep sebelum penghapusan).
+// ---------------------------------------------------------------------------
 
 interface OrderState {
   orders: Order[];
   isHydrated: boolean;
   setHydrated: (hydrated: boolean) => void;
-  addOrder: (order: Omit<Order, "createdAt" | "status">) => Order;
-  getOrderById: (id: string) => Order | undefined;
-  clearOrders: () => void;
+  // Migrasi demo satu kali: order anonim lama diklaim ke user pertama login.
+  claimDemoOrders: (userId: string) => void;
 }
 
 export const useOrderStore = create<OrderState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       orders: [],
       isHydrated: false,
 
       setHydrated: (hydrated) => set({ isHydrated: hydrated }),
 
-      addOrder: (order) => {
-        const full: Order = {
-          ...order,
-          createdAt: new Date().toISOString(),
-          status: "diproses",
-        };
-        set((state) => ({ orders: [full, ...state.orders] }));
-        return full;
+      claimDemoOrders: (userId) => {
+        if (userId === DEMO_BUYER_ID) return;
+        set((state) => ({
+          orders: state.orders.map((o) =>
+            o.buyerId === DEMO_BUYER_ID ? { ...o, buyerId: userId } : o
+          ),
+        }));
       },
-
-      getOrderById: (id) => get().orders.find((o) => o.id === id),
-
-      clearOrders: () => set({ orders: [] }),
     }),
     {
-      name: "tanihub-orders",
+      name: "tanihub-orders-v2",
       partialize: (state) => ({ orders: state.orders }),
       onRehydrateStorage: () => (state) => {
         if (state) state.setHydrated(true);
@@ -67,13 +46,4 @@ export const useOrderStore = create<OrderState>()(
   )
 );
 
-export function cartItemsToOrderItems(items: CartItem[]): OrderItem[] {
-  return items.map((item) => ({
-    productId: item.productId,
-    name: item.product.name,
-    image: item.product.images[0],
-    price: item.product.price,
-    unit: item.product.unit,
-    quantity: item.quantity,
-  }));
-}
+export type { Order };

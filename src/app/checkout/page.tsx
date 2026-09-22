@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -9,8 +9,11 @@ import { z } from "zod";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
 import { CartDrawer } from "@/components/tanihub/cart-drawer";
-import { useCartStore } from "@/store/cart";
-import { useOrderStore, cartItemsToOrderItems } from "@/store/orders";
+import { useCartStore, type CartItem } from "@/store/cart";
+import { computeGroupTotals } from "@/data/order";
+import { useAuthStore } from "@/store/auth";
+import { DEMO_BUYER_ID, generateIdempotencyKey } from "@/data/order";
+import { apiPost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, productImage } from "@/lib/utils";
 import { ChevronRight, Check, Truck, CreditCard, MapPin, User, Mail, Phone, Loader2, Package } from "lucide-react";
 
 const addressSchema = z.object({
@@ -80,16 +83,33 @@ const paymentMethods = [
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const { items, getSubtotal, clearCart, isHydrated } = useCartStore();
-  const addOrder = useOrderStore((s) => s.addOrder);
+  const { items, clearCart, isHydrated } = useCartStore();
+  const revalidateCart = useCartStore((s) => s.revalidate);
+  const authStatus = useAuthStore((s) => s.status);
   const [currentStep, setCurrentStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [orderId, setOrderId] = useState<string | null>(null);
+  const [createdOrderIds, setCreatedOrderIds] = useState<string[]>([]);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const idempotencyRef = useRef<string | null>(null);
 
-  const subtotal = isHydrated ? getSubtotal() : 0;
-  const shipping = subtotal > 500000 ? 0 : 25000;
-  const serviceFee = Math.round(subtotal * 0.02);
-  const total = subtotal + shipping + serviceFee;
+  // Cart di-group per farmer untuk tampilan review. Total per grup memakai
+  // aturan yang SAMA dengan server (computeGroupTotals) — angka final dari API.
+  const groups = useMemo(() => {
+    const map = new Map<string, { farmerId: string; farmerName: string; items: CartItem[] }>();
+    for (const it of items) {
+      const key = it.product.farmerId;
+      const g = map.get(key) ?? { farmerId: key, farmerName: it.product.farmerName, items: [] };
+      g.items.push(it);
+      map.set(key, g);
+    }
+    return [...map.values()].map((g) => {
+      const subtotal = g.items.reduce((s, i) => s + i.product.price * i.quantity, 0);
+      return { ...g, subtotal, ...computeGroupTotals(subtotal) };
+    });
+  }, [items]);
+  const grandShipping = groups.reduce((s, g) => s + g.shippingFee, 0);
+  const grandService = groups.reduce((s, g) => s + g.serviceFee, 0);
+  const grandTotal = groups.reduce((s, g) => s + g.total, 0);
 
   const addressForm = useForm<AddressForm>({
     resolver: zodResolver(addressSchema),
@@ -151,6 +171,15 @@ export default function CheckoutPage() {
             : paymentForm;
       const valid = await activeForm.trigger();
       if (valid) {
+        if (currentStep === 2) {
+          // Masuk review = revalidasi terakhir agar total sesuai server.
+          const r = await revalidateCart();
+          if (r.unknownProductIds.length > 0) {
+            setSubmitError("Ada produk yang tak dikenal server. Periksa keranjang Anda.");
+            return;
+          }
+          if (useCartStore.getState().items.length === 0) return;
+        }
         setCurrentStep((prev) => prev + 1);
       }
     } else {
@@ -163,26 +192,34 @@ export default function CheckoutPage() {
   };
 
   const handleSubmit = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0 || isSubmitting) return;
     setIsSubmitting(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const newOrderId = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-    // Persist order BEFORE clearing cart so /pesanan can display it.
-    addOrder({
-      id: newOrderId,
-      items: cartItemsToOrderItems(items),
-      subtotal,
-      shipping,
-      serviceFee,
-      total,
-      recipientName: addressForm.getValues("fullName"),
-      city: addressForm.getValues("city"),
-    });
-    setOrderId(newOrderId);
-    clearCart();
-    setCurrentStep(4); // Success step
-    setIsSubmitting(false);
+    setSubmitError(null);
+    if (!idempotencyRef.current) idempotencyRef.current = generateIdempotencyKey();
+    try {
+      // Order dibuat SERVER-SIDE: harga/stok/relasi divalidasi + dihitung ulang
+      // dari database. Cart hanya mengirim productId + quantity.
+      const res = await apiPost<{ data: { groupId: string; orderIds: string[]; deduped: boolean } }>(
+        "/api/orders",
+        {
+          lines: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+          address: { ...addressForm.getValues(), notes: addressForm.getValues("notes") || undefined },
+          courier: deliveryForm.getValues("courier"),
+          courierService: deliveryForm.getValues("service"),
+          paymentMethod: paymentForm.getValues("method"),
+          idempotencyKey: idempotencyRef.current,
+        }
+      );
+      idempotencyRef.current = null;
+      setCreatedOrderIds(res.data.orderIds);
+      clearCart();
+      setCurrentStep(4); // Success step
+    } catch (err) {
+      // Gagal = cart dipertahankan utuh, user tetap di step review + pesan jelas.
+      setSubmitError(err instanceof Error ? err.message : "Pesanan gagal dibuat.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const isCartEmpty = isHydrated && items.length === 0 && currentStep !== 4;
@@ -198,11 +235,21 @@ export default function CheckoutPage() {
             </div>
             <h1 className="text-2xl font-bold text-foreground mb-2">Pesanan Berhasil!</h1>
             <p className="text-muted-foreground mb-6">
-              Pesanan Anda telah dikonfirmasi dengan nomor <strong className="text-foreground">{orderId}</strong>
+              {createdOrderIds.length} pesanan dibuat dan diteruskan ke petani. Pantau
+              statusnya di halaman Pesanan Saya.
             </p>
-            <p className="text-sm text-muted-foreground mb-8">
-              Detail pesanan telah dikirim ke email Anda. Anda dapat melacak status pesanan di halaman Pesanan Saya.
-            </p>
+            <div className="space-y-2 mb-8">
+              {createdOrderIds.map((id) => (
+                <Button
+                  key={id}
+                  variant="outline"
+                  className="w-full font-mono text-sm"
+                  onClick={() => router.push(`/pesanan/${id}`)}
+                >
+                  {id}
+                </Button>
+              ))}
+            </div>
             <div className="space-y-3">
               <Button className="w-full" onClick={() => router.push("/pesanan")}>
                 Lihat Pesanan
@@ -234,6 +281,51 @@ export default function CheckoutPage() {
             <Button className="w-full" onClick={() => router.push("/marketplace")}>
               Cari Produk
             </Button>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  // Order production tidak anonim: butuh akun agar punya pemilik yang sah.
+  // Cart TIDAK dihapus — user kembali dengan isi utuh setelah login.
+  if (authStatus === "loading" || !isHydrated) {
+    return (
+      <div className="flex flex-col min-h-screen bg-background">
+        <Navbar />
+        <main className="flex-1 py-12 px-4" aria-busy="true">
+          <div className="container-wide max-w-3xl space-y-4">
+            <div className="h-10 rounded-lg bg-muted animate-pulse" />
+            <div className="h-64 rounded-2xl bg-muted animate-pulse" />
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  if (authStatus === "unauthenticated") {
+    return (
+      <div className="flex flex-col min-h-screen bg-background">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center py-12 px-4">
+          <div className="max-w-md w-full text-center">
+            <h1 className="text-2xl font-bold text-foreground mb-2">
+              Masuk untuk checkout
+            </h1>
+            <p className="text-muted-foreground mb-8">
+              Pesanan terhubung ke akun Anda. Keranjang ({items.length} item) tersimpan dan
+              tidak hilang.
+            </p>
+            <div className="space-y-3">
+              <Button className="w-full" onClick={() => router.push("/login?returnTo=%2Fcheckout")}>
+                Masuk / Daftar
+              </Button>
+              <Button variant="outline" className="w-full" onClick={() => router.push("/marketplace")}>
+                Lanjut Belanja
+              </Button>
+            </div>
           </div>
         </main>
         <Footer />
@@ -590,7 +682,7 @@ export default function CheckoutPage() {
                           <div key={item.id} className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
                             <div className="flex items-center gap-3">
                               <Image
-                                src={item.product.images[0]}
+                                src={productImage(item.product.images)}
                                 alt={item.product.name}
                                 width={50}
                                 height={50}
@@ -607,18 +699,30 @@ export default function CheckoutPage() {
                       </div>
                       <Separator className="my-3" />
                       <div className="space-y-1 text-sm">
-                        <div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div>
-                        <div className="flex justify-between"><span>Ongkir</span><span>{shipping === 0 ? "Gratis" : formatCurrency(shipping)}</span></div>
-                        <div className="flex justify-between"><span>Biaya Layanan</span><span>{formatCurrency(serviceFee)}</span></div>
+                        {groups.map((g) => (
+                          <div key={g.farmerId} className="flex justify-between gap-2">
+                            <span className="text-muted-foreground truncate">Subtotal • {g.farmerName}</span>
+                            <span className="whitespace-nowrap">{formatCurrency(g.subtotal)}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between"><span>Ongkir ({groups.length} pengiriman)</span><span>{grandShipping === 0 ? "Gratis" : formatCurrency(grandShipping)}</span></div>
+                        <div className="flex justify-between"><span>Biaya Layanan</span><span>{formatCurrency(grandService)}</span></div>
                         <Separator />
-                        <div className="flex justify-between text-lg font-bold"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div>
+                        <div className="flex justify-between text-lg font-bold"><span>Total</span><span className="text-primary">{formatCurrency(grandTotal)}</span></div>
                       </div>
                     </CardContent>
                   </Card>
 
+                  {submitError && (
+                    <p role="alert" className="text-sm text-destructive font-medium">
+                      {submitError}
+                    </p>
+                  )}
                   <div className="flex gap-3">
                     <Button variant="outline" onClick={handleBack}>Kembali</Button>
-                    <Button type="submit" className="flex-1" disabled={isSubmitting}>
+                    {/* onClick eksplisit: step review bukan <form> sehingga
+                        type="submit" saja tidak memicu apa pun (bug lama). */}
+                    <Button className="flex-1" disabled={isSubmitting} onClick={() => void handleSubmit()}>
                       {isSubmitting ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -644,7 +748,7 @@ export default function CheckoutPage() {
                     {items.map((item) => (
                       <div key={item.id} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0">
                         <Image
-                          src={item.product.images[0]}
+                          src={productImage(item.product.images)}
                           alt={item.product.name}
                           width={50}
                           height={50}
@@ -662,23 +766,25 @@ export default function CheckoutPage() {
                   <Separator />
 
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Subtotal</span>
-                      <span>{formatCurrency(subtotal)}</span>
-                    </div>
+                    {groups.map((g) => (
+                      <div key={g.farmerId} className="flex justify-between gap-2">
+                        <span className="text-muted-foreground truncate">Subtotal • {g.farmerName}</span>
+                        <span className="whitespace-nowrap">{formatCurrency(g.subtotal)}</span>
+                      </div>
+                    ))}
                     <div className="flex justify-between">
                       <span className="text-muted-foreground flex items-center gap-1">
                         <Truck className="h-3.5 w-3.5" />
-                        Ongkir
+                        Ongkir ({groups.length} pengiriman)
                       </span>
-                      <span>{shipping === 0 ? "Gratis" : formatCurrency(shipping)}</span>
+                      <span>{grandShipping === 0 ? "Gratis" : formatCurrency(grandShipping)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground flex items-center gap-1">
                         <CreditCard className="h-3.5 w-3.5" />
                         Biaya Layanan
                       </span>
-                      <span>{formatCurrency(serviceFee)}</span>
+                      <span>{formatCurrency(grandService)}</span>
                     </div>
                   </div>
 
@@ -686,12 +792,12 @@ export default function CheckoutPage() {
 
                   <div className="flex justify-between text-lg font-bold">
                     <span>Total Bayar</span>
-                    <span className="text-primary">{formatCurrency(total)}</span>
+                    <span className="text-primary">{formatCurrency(grandTotal)}</span>
                   </div>
 
-                  {subtotal < 500000 && (
+                  {groups.length === 1 && groups[0].subtotal < 500000 && (
                     <p className="text-xs text-muted-foreground text-center">
-                      Tambah {formatCurrency(500000 - subtotal)} untuk ongkir gratis
+                      Tambah {formatCurrency(500000 - groups[0].subtotal)} untuk ongkir gratis
                     </p>
                   )}
                 </CardContent>

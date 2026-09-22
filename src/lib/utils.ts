@@ -32,3 +32,12 @@ export function slugify(str: string): string {
     .replace(/[\s_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+export const FALLBACK_PRODUCT_IMAGE =
+  "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=800&q=80";
+
+// Gambar aman untuk next/image — tak pernah string kosong.
+export function productImage(images: string[] | undefined, index = 0): string {
+  const u = images?.[index];
+  return u && u.trim() !== "" ? u : FALLBACK_PRODUCT_IMAGE;
+}

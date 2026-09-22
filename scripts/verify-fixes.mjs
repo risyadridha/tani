@@ -47,10 +47,11 @@ check(
   check("#4 bank items not inside method RadioGroup", !methodBlock.includes("value={bank}"));
 }
 
-// #5 static params cover all products
+// #5 PDP resolves dari API (migrasi Sprint 4: bukan generateStaticParams mock)
 check(
-  "#5 generateStaticParams derives from mockProducts",
-  read("src/app/produk/[id]/page.tsx").includes("mockProducts.map")
+  "#5 product detail fetches from API",
+  read("src/app/produk/[id]/page.tsx").includes("/api/products/") &&
+    !read("src/app/produk/[id]/page.tsx").includes("mockProducts")
 );
 
 // #6 no history spam
@@ -145,9 +146,76 @@ check(
     try { src = read(f); } catch { continue; }
     check(
       `controlled Select in ${f}`,
-      !/value=\{[^}]*\|\|\s*undefined/.test(src)
+      /<Select[\s\S]*?value=\{/.test(src) && /<Select[\s\S]*?onValueChange=\{/.test(src)
     );
   }
+}
+
+// Sprint 2 — order domain & integration (static guards)
+{
+  const domain = read("src/data/order.ts");
+  check("order machine centralized (canTransitionOrderStatus)", domain.includes("canTransitionOrderStatus"));
+  check("order machine forbids completed->processing", !/completed:\s*\[[^\]]*processing/.test(domain));
+  check("order machine forbids cancelled transitions", /cancelled:\s*\[\]/.test(domain));
+  check("actor split farmer/buyer exists", domain.includes("FARMER_TRANSITIONS") && domain.includes("BUYER_TRANSITIONS"));
+  check("order snapshots documented", domain.includes("Snapshot") || domain.includes("snapshot"));
+  const store = read("src/store/orders.ts");
+  check("single order store (no duplicate)", !/create<OrderStore|useOrderStore2|orders-v1/.test(store));
+  check("idempotency key checked", read("src/lib/server/services/order-service.ts").includes("idempotency"));
+  check("validate-before-mutate in createOrders", (() => {
+    const svc = read("src/lib/server/services/order-service.ts");
+    return svc.indexOf("validateOrderLine") < svc.indexOf("INSERT INTO orders");
+  })());
+  check("legacy migration exists", store.includes("claimDemoOrders"));
+  check("like wildcards escaped", read("src/lib/server/repositories/product-repository.ts").includes("escapeLike"));  check("checkout wires handleSubmit to Bayar button", read("src/app/checkout/page.tsx").includes("onClick={() => void handleSubmit()}"));
+  check("checkout preserves cart on failure", read("src/app/checkout/page.tsx").includes("setSubmitError"));
+  check("checkout groups per farmer", read("src/app/checkout/page.tsx").includes("farmerId"));
+  check("buyer detail route exists", existsSync(join(root, "src/app/pesanan/[id]/page.tsx")));
+  check("farmer inbox route exists", existsSync(join(root, "src/app/dashboard/pesanan/page.tsx")));
+  check("timeline honest (no fake AI)", !/AI-powered|AI MAGIC/i.test(read("src/app/pesanan/[id]/page.tsx")));
+  check("mysql schema present", existsSync(join(root, "docs/mysql-schema.sql")));
+  check("mysql money = INT UNSIGNED", /price\s+INT UNSIGNED/.test(read("docs/mysql-schema.sql")));
+  check("mysql history preserved (orders RESTRICT)", /CONSTRAINT fk_orders_buyer[\s\S]{0,200}?ON DELETE RESTRICT/.test(read("docs/mysql-schema.sql")));
+}
+
+// Sprint 3 — auth backend & identity (static guards)
+{
+  check("auth register route exists", existsSync(join(root, "src/app/api/auth/register/route.ts")));
+  check("auth login route exists", existsSync(join(root, "src/app/api/auth/login/route.ts")));
+  check("auth logout route exists", existsSync(join(root, "src/app/api/auth/logout/route.ts")));
+  check("auth me route exists", existsSync(join(root, "src/app/api/auth/me/route.ts")));
+  const reg = read("src/app/api/auth/register/route.ts");
+  check("register hashes password", reg.includes("hashPassword") && !reg.includes("passwordHash: parsed"));
+  check("register atomic unique insert", reg.includes("insertUnique") || read("src/lib/server/repositories/user-repository.ts").includes("ER_DUP_ENTRY"));
+  const login = read("src/app/api/auth/login/route.ts");
+  check("login generic error (no enumeration)", login.includes("INVALID_CREDENTIALS") && !login.includes("EMAIL_NOT_FOUND"));
+  check("login rate limited", login.includes("isRateLimited"));
+  check("session httpOnly cookie", read("src/lib/server/session.ts").includes("httpOnly: true"));
+  check("session stores hash not token", read("src/lib/server/session.ts").includes("tokenHash"));
+  check("no password in safe user", !read("src/lib/server/auth-helpers.ts").includes("passwordHash"));
+  check("auth store not persisted (server authority)", !read("src/store/auth.ts").includes("persist("));
+  check("checkout requires login", read("src/app/checkout/page.tsx").includes("returnTo=%2Fcheckout") || read("src/app/checkout/page.tsx").includes("returnTo"));
+  check("login/register pages exist", existsSync(join(root, "src/app/login/page.tsx")) && existsSync(join(root, "src/app/register/page.tsx")));
+  check("env example documents secrets", existsSync(join(root, ".env.example")));
+}
+
+// Sprint 4 — apiFetch mengembalikan body UTUH ({ data, meta? }); call site
+// wajib unwrap res.data. Mencegah regresi kontrak ganda.
+{
+  const api = read("src/lib/api.ts");
+  check("apiFetch returns full body", api.includes("return body as T"));
+  const bad = [];
+  for (const f of [
+    "src/app/produk/[id]/page.tsx",
+    "src/app/kelola-produk/[id]/edit/page.tsx",
+    "src/app/pesanan/[id]/page.tsx",
+    "src/app/checkout/page.tsx",
+  ]) {
+    const src = read(f);
+    // Pola salah: generic tanpa wrapper { data } padahal akses .data/.orderIds.
+    if (/api(Fetch|Post|Patch)<(?!{)/.test(src)) bad.push(f);
+  }
+  check("no unwrapped apiFetch generics", bad.length === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

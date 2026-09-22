@@ -10,14 +10,9 @@ import {
 } from "@/data/seller";
 
 // ---------------------------------------------------------------------------
-// Seller identity + application. Satu source of truth untuk status aplikasi
-// (satu enum — bukan banyak boolean). Persist ke localStorage sebagai
-// arsitektur sementara pengganti backend (lihat src/data/seller.ts).
-//
-// CATATAN DEMO: tidak ada auth/user system di codebase (confirmed via grep:
-// tidak ada session/login/role). "Seller saat ini" = farmer yang dibuat saat
-// approval di perangkat ini. Label mode demo ditampilkan di UI. Saat backend
-// masuk, ganti store ini dengan session + API tanpa mengubah UI.
+// Store seller LOKAL (warisan demo Sprint 1): fallback identitas + chat untuk
+// data perangkat lama. Otoritas seller sejak Sprint 4 adalah server
+// (/api/seller/status + SellerGate); store ini bukan sumber kebenaran.
 // ---------------------------------------------------------------------------
 
 interface SellerState {
@@ -31,12 +26,15 @@ interface SellerState {
   // via backend. Dinamai eksplisit agar tidak menyamar sebagai verifikasi asli.
   simulateApprove: () => void;
   simulateReject: (reason: string) => void;
+  // Akun berbeda di perangkat sama mulai pengajuan baru yang bersih.
+  resetApplication: () => void;
   resetAll: () => void;
 }
 
 function buildFarmer(app: SellerApplication): SellerFarmer {
   return {
     id: generateSellerId("farmer"),
+    userId: app.userId,
     name: app.fullName,
     location: app.location,
     description: app.description,
@@ -110,6 +108,7 @@ export const useSellerStore = create<SellerState>()(
       },
 
       // Dipakai untuk testing manual; di UI hanya diekspos di area demo.
+      resetApplication: () => set({ application: null, farmer: null }),
       resetAll: () => set({ application: null, farmer: null }),
     }),
     {

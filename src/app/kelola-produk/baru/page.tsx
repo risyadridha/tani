@@ -4,31 +4,38 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
-import { SellerGate, SellerNav } from "@/components/tanihub/seller-nav";
+import { SellerGate, SellerNav, useSellerIdentity } from "@/components/tanihub/seller-nav";
 import { SellerProductForm } from "@/components/tanihub/seller-product-form";
 import type { SellerProductForm as FormValues } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
+import { apiPost } from "@/lib/api";
 
 function NewProductContent() {
   const router = useRouter();
-  const farmer = useSellerStore((s) => s.farmer);
-  const addProduct = useSellerCatalogStore((s) => s.addProduct);
-  const initialLocation = useSellerStore((s) => s.application?.farmLocation ?? "");
+  const identity = useSellerIdentity();
 
-  if (!farmer) return null;
+  if (!identity) return null;
 
-  const handleSubmit = (values: FormValues) => {
-    const product = addProduct({
-      ...values,
-      farmerId: farmer.id,
-      farmerName: farmer.name,
-      farmerVerified: true,
-      farmerRating: 0,
-      farmerReviewCount: 0,
-    });
-    toast.success(`Produk "${product.name}" dibuat.`);
-    router.push("/kelola-produk");
+  const handleSubmit = async (values: FormValues) => {
+    try {
+      await apiPost("/api/products", {
+        name: values.name,
+        category: values.category,
+        description: values.description,
+        imageUrl: values.imageUrl || undefined,
+        grade: values.grade,
+        price: values.price,
+        unit: values.unit,
+        minOrder: values.minOrder,
+        stock: values.stock,
+        location: values.location,
+        status: values.status,
+      });
+      toast.success(`Produk "${values.name.trim()}" dibuat.`);
+      router.push("/kelola-produk");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal membuat produk.");
+      throw err;
+    }
   };
 
   return (
@@ -39,12 +46,11 @@ function NewProductContent() {
           Produk aktif dengan stok tersedia otomatis tampil di marketplace.
         </p>
       </div>
-      <SellerNav farmerId={farmer.id} />
+      <SellerNav farmerId={identity.farmerId} />
       <SellerProductForm
         title="Data Produk"
-        initial={{ location: initialLocation }}
         submitLabel="Simpan Produk"
-        onSubmit={handleSubmit}
+        onSubmit={(v) => void handleSubmit(v)}
       />
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { notFound, useParams, useRouter } from "next/navigation";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
@@ -10,16 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getFarmerById } from "@/data/farmers";
-import {
-  getProductById,
-  getProductsByFarmerId,
-  mockProducts,
-} from "@/data/products";
+import { apiFetch, fetchFarmer, toProduct, type ApiFarmer } from "@/lib/api";
+import type { Product } from "@/data/products";
 import { useCartStore } from "@/store/cart";
 import { useSellerStore } from "@/store/seller";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
 import {
   Star,
   MapPin,
@@ -38,18 +34,51 @@ export default function FarmerDetailPage() {
   const { addItem } = useCartStore();
   const farmerId = params.id;
   const sellerFarmer = useSellerStore((s) => s.farmer);
-  const sellerProducts = useSellerCatalogStore((s) => s.products);
-  const catalogHydrated = useSellerCatalogStore((s) => s.isHydrated);
 
-  const farmer = useMemo(() => {
-    const found = getFarmerById(farmerId);
-    if (found) return found;
-    // Akun seller dari Sprint 1 (dibuat saat application disetujui).
-    if (sellerFarmer && sellerFarmer.id === farmerId) {
-      return {
+  const [farmer, setFarmer] = useState<ApiFarmer | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [state, setState] = useState<"loading" | "ready" | "missing" | "error">("loading");
+  const [error, setError] = useState("");
+  const reqId = useRef(0);
+
+  useEffect(() => {
+    // Profil seller perangkat ini tanpa round-trip API.
+    if (sellerFarmer && sellerFarmer.id === farmerId) return;
+    const id = ++reqId.current;
+    const ctrl = new AbortController();
+    apiFetch<{ data: ApiFarmer & { products: Parameters<typeof toProduct>[0][] } }>(
+      `/api/farmers/${encodeURIComponent(farmerId)}`,
+      { signal: ctrl.signal }
+    )
+      .then((res) => {
+        if (reqId.current !== id) return;
+        const { products: rel, ...f } = res.data;
+        setFarmer(f);
+        setProducts(rel.map(toProduct));
+        setState("ready");
+      })
+      .catch((err: unknown) => {
+        if (reqId.current !== id) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (err instanceof Error && "status" in err && (err as { status: number }).status === 404) {
+          setState("missing");
+        } else {
+          setState("error");
+          setError(err instanceof Error ? err.message : "Gagal memuat petani.");
+        }
+      });
+    return () => {
+      reqId.current++;
+      ctrl.abort();
+    };
+  }, [farmerId, sellerFarmer]);
+
+  const sellerView = useMemo(() => {
+    if (!sellerFarmer || sellerFarmer.id !== farmerId) return null;
+    return {
+      farmer: {
         id: sellerFarmer.id,
         name: sellerFarmer.name,
-        avatar: sellerFarmer.avatar,
         location: sellerFarmer.location,
         verified: true,
         rating: 0,
@@ -57,55 +86,57 @@ export default function FarmerDetailPage() {
         completedOrders: 0,
         responseRate: 100,
         memberSince: sellerFarmer.memberSince,
-        commodities: sellerFarmer.commodities,
         description: sellerFarmer.description,
         farmSize: sellerFarmer.farmSize ?? "-",
+        avatar: sellerFarmer.avatar ?? null,
+        commodities: sellerFarmer.commodities,
         certifications: [] as string[],
-        upcomingHarvests: [] as {
-          crop: string;
-          estimatedDate: string;
-          estimatedQuantity: string;
-        }[],
-      };
-    }
-    // Fallback untuk farmer-6..8 yang hanya ada di products.ts
-    const product = mockProducts.find((p) => p.farmerId === farmerId);
-    if (!product) return undefined;
-    return {
-      id: product.farmerId,
-      name: product.farmerName,
-      avatar: product.images[0],
-      location: product.location,
-      verified: product.farmerVerified,
-      rating: product.farmerRating,
-      reviewCount: product.farmerReviewCount,
-      completedOrders: product.farmerReviewCount,
-      responseRate: 90,
-      memberSince: "-",
-      commodities: [product.category],
-      description: `Petani ${product.name} dari ${product.location}.`,
-      farmSize: "-",
-      certifications: [] as string[],
-      upcomingHarvests: [] as {
-        crop: string;
-        estimatedDate: string;
-        estimatedQuantity: string;
-      }[],
+        upcomingHarvests: [] as { crop: string; estimatedDate: string; estimatedQuantity: string }[],
+        productCount: 0,
+      } satisfies ApiFarmer,
+      products: [] as Product[],
     };
-  }, [farmerId, sellerFarmer]);
+  }, [sellerFarmer, farmerId]);
 
-  const products = useMemo(() => {
-    const base = getProductsByFarmerId(farmerId);
-    if (!catalogHydrated) return base;
-    // Produk seller tampil di profil yang sama — satu katalog.
-    const mine = sellerProducts.filter((p) => p.farmerId === farmerId);
-    return [...mine, ...base];
-  }, [farmerId, sellerProducts, catalogHydrated]);
-
-  if (!farmer) {
-    notFound();
+  if (sellerView) {
+    return <FarmerDetailView farmer={sellerView.farmer} products={sellerView.products} />;
   }
+  if (state === "loading") {
+    return (
+      <div className="flex flex-col min-h-screen bg-background">
+        <Navbar />
+        <main className="flex-1 pt-6 pb-12" aria-busy="true">
+          <div className="container-wide space-y-4">
+            <Skeleton className="h-48 w-full rounded-2xl" />
+            <Skeleton className="h-32 w-full rounded-2xl" />
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+  if (state === "missing") notFound();
+  if (state === "error" || !farmer) {
+    return (
+      <div className="flex flex-col min-h-screen bg-background">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <h1 className="text-xl font-bold text-foreground mb-2">Petani gagal dimuat.</h1>
+            <p className="text-sm text-muted-foreground mb-4">{error}</p>
+            <Button onClick={() => window.location.reload()}>Coba Lagi</Button>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+  return <FarmerDetailView farmer={farmer} products={products} />;
+}
 
+function FarmerDetailView({ farmer, products }: { farmer: ApiFarmer; products: Product[] }) {
+  const router = useRouter();
+  const { addItem } = useCartStore();
   const hasRating = farmer.reviewCount > 0;
 
   return (
@@ -126,7 +157,7 @@ export default function FarmerDetailPage() {
           <Card className="mb-8">
             <CardContent className="p-6 flex flex-col sm:flex-row gap-6">
               <Avatar className="h-24 w-24">
-                <AvatarImage src={farmer.avatar} alt={farmer.name} />
+                <AvatarImage src={farmer.avatar ?? undefined} alt={farmer.name} />
                 <AvatarFallback className="text-2xl font-semibold bg-primary/10 text-primary">
                   {farmer.name.charAt(0).toUpperCase()}
                 </AvatarFallback>
@@ -147,7 +178,7 @@ export default function FarmerDetailPage() {
                   <MapPin className="h-4 w-4" />
                   {farmer.location}
                 </p>
-                <div className="flex items-center gap-4 mt-2 text-sm">
+                <div className="flex items-center gap-4 mt-2 text-sm flex-wrap">
                   {hasRating ? (
                     <span className="flex items-center gap-1">
                       <Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />
@@ -214,7 +245,7 @@ export default function FarmerDetailPage() {
                       verified={p.farmerVerified}
                       rating={p.rating}
                       reviewCount={p.reviewCount}
-                      onAddToCart={() => addItem(getProductById(p.id) ?? p, p.minOrder)}
+                      onAddToCart={() => addItem(p, p.minOrder)}
                       onChat={() =>
                         router.push(`/chat/${p.farmerId}?product=${p.id}`)
                       }
@@ -255,7 +286,7 @@ export default function FarmerDetailPage() {
                     <p className="text-sm text-muted-foreground">
                       Luas lahan:{" "}
                       <span className="text-foreground font-medium">
-                        {farmer.farmSize}
+                        {farmer.farmSize ?? "-"}
                       </span>
                     </p>
                   </CardContent>

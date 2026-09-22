@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Navbar } from "@/components/tanihub/navbar";
@@ -11,24 +11,25 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { Search, Filter, X, ChevronDown, Loader2 } from "lucide-react";
-import { mockProducts, mockCategories, mockLocations } from "@/data/products";
-import { isAvailableForMarketplace } from "@/data/seller";
+import { Search, Filter, X, ChevronDown, ChevronLeft, Loader2 } from "lucide-react";
+import { mockCategories, mockLocations, type Product } from "@/data/products";
+import { apiFetch, toProduct, type ApiMeta, type ApiProduct } from "@/lib/api";
 import { useCartStore } from "@/store/cart";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
+
+const PAGE_SIZE = 12;
 
 export function MarketplaceContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { addItem } = useCartStore();
-  // Single source of truth: katalog mock + produk seller yang memenuhi
-  // business rule (active + stok > 0). Satu daftar, tidak ada dua sistem.
-  // Selector mengambil referensi array (stabil) — filter di useMemo.
-  const sellerProducts = useSellerCatalogStore((s) => s.products);
-  const allProducts = useMemo(
-    () => [...mockProducts, ...sellerProducts.filter(isAvailableForMarketplace)],
-    [sellerProducts]
-  );
+
+  // Source of truth: GET /api/products (MySQL). Filter dikirim sebagai query.
+  const [products, setProducts] = useState<Product[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
   const [query, setQuery] = useState(searchParams.get("q") || "");
   const [category, setCategory] = useState(searchParams.get("category") || "Semua");
@@ -38,12 +39,12 @@ export function MarketplaceContent() {
   const [maxPrice, setMaxPrice] = useState(searchParams.get("maxPrice") || "");
   const [showFilters, setShowFilters] = useState(false);
 
-  const handleAddToCart = useCallback((product: typeof mockProducts[0]) => {
+  const handleAddToCart = useCallback((product: Product) => {
     addItem(product, product.minOrder);
   }, [addItem]);
 
   const handleChat = useCallback(
-    (product: typeof mockProducts[0]) => {
+    (product: Product) => {
       router.push(`/chat/${product.farmerId}?product=${product.id}`);
     },
     [router]
@@ -51,92 +52,98 @@ export function MarketplaceContent() {
 
   const handleCategoryChange = useCallback((value: string | null) => {
     setCategory(value ?? "");
+    setPage(1);
   }, []);
 
   const handleLocationChange = useCallback((value: string | null) => {
     setLocation(value ?? "");
+    setPage(1);
   }, []);
 
   const handleSortChange = useCallback((value: string | null) => {
     setSortBy(value ?? "");
+    setPage(1);
   }, []);
 
   const handleCategoryChangeSidebar = useCallback((value: string | null) => {
     setCategory(value ?? "");
+    setPage(1);
   }, []);
 
   const handleLocationChangeSidebar = useCallback((value: string | null) => {
     setLocation(value ?? "");
+    setPage(1);
   }, []);
 
   const handleSortChangeSidebar = useCallback((value: string | null) => {
     setSortBy(value ?? "");
+    setPage(1);
   }, []);
 
-  const filteredProducts = useMemo(() => {
-    return allProducts.filter((product) => {
-      const matchesQuery =
-        !query ||
-        product.name.toLowerCase().includes(query.toLowerCase()) ||
-        product.category.toLowerCase().includes(query.toLowerCase()) ||
-        product.tags.some((tag) => tag.toLowerCase().includes(query.toLowerCase()));
-
-      const matchesCategory = category === "Semua" || product.category === category;
-      const matchesLocation = location === "Semua Lokasi" || product.location.includes(location);
-      const matchesMinPrice = !minPrice || product.price >= parseInt(minPrice);
-      const matchesMaxPrice = !maxPrice || product.price <= parseInt(maxPrice);
-
-      return matchesQuery && matchesCategory && matchesLocation && matchesMinPrice && matchesMaxPrice;
-    });
-  }, [allProducts, query, category, location, minPrice, maxPrice]);
-
-  const sortedProducts = useMemo(() => {
-    const products = [...filteredProducts];
-    switch (sortBy) {
-      case "termurah":
-        return products.sort((a, b) => a.price - b.price);
-      case "termahal":
-        return products.sort((a, b) => b.price - a.price);
-      case "rating":
-        return products.sort((a, b) => b.rating - a.rating);
-      case "terlaris":
-        return products.sort((a, b) => b.reviewCount - a.reviewCount);
-      default:
-        return products;
-    }
-  }, [filteredProducts, sortBy]);
-
-  const hasActiveFilters = category !== "Semua" || location !== "Semua Lokasi" || minPrice || maxPrice;
-
-  const updateUrl = () => {
+  const filteredParams = useCallback(() => {
     const params = new URLSearchParams();
-    if (query) params.set("q", query);
+    if (query.trim()) params.set("q", query.trim());
     if (category !== "Semua") params.set("category", category);
     if (location !== "Semua Lokasi") params.set("location", location);
     if (sortBy !== "terbaru") params.set("sort", sortBy);
     if (minPrice) params.set("minPrice", minPrice);
     if (maxPrice) params.set("maxPrice", maxPrice);
-    // replace (bukan push) agar mengetik filter tidak menumpuk history browser.
-    router.replace(`/marketplace?${params.toString()}`);
-  };
+    params.set("page", String(page));
+    params.set("limit", String(PAGE_SIZE));
+    return params;
+  }, [query, category, location, sortBy, minPrice, maxPrice, page]);
 
+  // Fetch dengan guard race (requestId) + abort agar respons basi diabaikan.
   useEffect(() => {
-    const timer = setTimeout(updateUrl, 300);
-    return () => clearTimeout(timer);
-  }, [query, category, location, sortBy, minPrice, maxPrice]);
+    const id = ++requestId.current;
+    const ctrl = new AbortController();
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      setLoadError(null);
+      // replace (bukan push) agar mengetik filter tidak menumpuk history.
+      router.replace(`/marketplace?${filteredParams().toString()}`);
+      try {
+        const res = await apiFetch<{ data: ApiProduct[]; meta: ApiMeta }>(
+          `/api/products?${filteredParams().toString()}`,
+          { signal: ctrl.signal }
+        );
+        if (requestId.current !== id) return;
+        setProducts(res.data.map(toProduct));
+        setTotal(res.meta.total);
+      } catch (err) {
+        if (requestId.current !== id) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setLoadError(err instanceof Error ? err.message : "Gagal memuat produk.");
+        setProducts([]);
+        setTotal(0);
+      } finally {
+        if (requestId.current === id) setLoading(false);
+      }
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [filteredParams, router]);
 
+  // Ganti filter → kembali ke halaman 1.
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    updateUrl();
+    setPage(1);
   };
 
   const clearFilters = () => {
+    setQuery("");
     setCategory("Semua");
     setLocation("Semua Lokasi");
     setMinPrice("");
     setMaxPrice("");
     setSortBy("terbaru");
+    setPage(1);
   };
+
+  const hasActiveFilters =
+    query.trim() !== "" || category !== "Semua" || location !== "Semua Lokasi" || minPrice || maxPrice;
 
   return (
     <div className="container-wide">
@@ -155,7 +162,10 @@ export function MarketplaceContent() {
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
             <Input
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
               placeholder="Cari produk, petani, komoditas..."
               className="h-12 pl-12 pr-4 text-base lg:h-12"
             />
@@ -173,8 +183,9 @@ export function MarketplaceContent() {
           </div>
         </div>
 
-        {/* Filter Bar - Desktop */}
-        <div className={cn("mt-4 flex flex-wrap items-center gap-3", showFilters ? "block" : "lg:block hidden")}>
+        {/* Filter Bar - hanya mobile (dibuka via tombol Filter).
+            Desktop memakai panel sidebar agar tidak ada kontrol duplikat. */}
+        <div className={cn("mt-4 flex-col gap-3 lg:hidden", showFilters ? "flex" : "hidden")}>
           <Select value={category} onValueChange={handleCategoryChange}>
             <SelectTrigger className="h-10 w-full sm:w-48">
               <SelectValue placeholder="Kategori" />
@@ -206,7 +217,10 @@ export function MarketplaceContent() {
               type="number"
               placeholder="Min"
               value={minPrice}
-              onChange={(e) => setMinPrice(e.target.value)}
+              onChange={(e) => {
+                setMinPrice(e.target.value);
+                setPage(1);
+              }}
               className="w-28 h-10"
               aria-label="Harga minimum"
             />
@@ -215,7 +229,10 @@ export function MarketplaceContent() {
               type="number"
               placeholder="Max"
               value={maxPrice}
-              onChange={(e) => setMaxPrice(e.target.value)}
+              onChange={(e) => {
+                setMaxPrice(e.target.value);
+                setPage(1);
+              }}
               className="w-28 h-10"
               aria-label="Harga maksimum"
             />
@@ -298,7 +315,10 @@ export function MarketplaceContent() {
                     type="number"
                     placeholder="Min"
                     value={minPrice}
-                    onChange={(e) => setMinPrice(e.target.value)}
+                    onChange={(e) => {
+                setMinPrice(e.target.value);
+                setPage(1);
+              }}
                     className="flex-1 h-10"
                   />
                   <span className="text-muted-foreground">–</span>
@@ -306,7 +326,10 @@ export function MarketplaceContent() {
                     type="number"
                     placeholder="Max"
                     value={maxPrice}
-                    onChange={(e) => setMaxPrice(e.target.value)}
+                    onChange={(e) => {
+                setMaxPrice(e.target.value);
+                setPage(1);
+              }}
                     className="flex-1 h-10"
                   />
                 </div>
@@ -334,14 +357,57 @@ export function MarketplaceContent() {
         {/* Product Grid */}
         <div className="flex-1">
           <div className="flex items-center justify-between mb-6">
-            <p className="text-sm text-muted-foreground">
-              {sortedProducts.length} produk ditemukan
+            <p className="text-sm text-muted-foreground" aria-live="polite">
+              {loading ? "Memuat produk..." : `${total} produk ditemukan`}
             </p>
           </div>
 
-          {sortedProducts.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {sortedProducts.map((product, index) => (
+          {loading ? (
+            <div className="grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4" aria-busy="true">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="space-y-3">
+                  <Skeleton className="aspect-[4/3] w-full rounded-2xl" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-1/2" />
+                </div>
+              ))}
+            </div>
+          ) : loadError ? (
+            <div className="text-center py-16 lg:py-24">
+              <h3 className="text-lg font-semibold text-foreground mb-2">
+                Produk gagal dimuat.
+              </h3>
+              <p className="text-muted-foreground mb-6 max-w-sm mx-auto">{loadError}</p>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setLoadError(null);
+                  setLoading(true);
+                  const id = ++requestId.current;
+                  apiFetch<{ data: ApiProduct[]; meta: ApiMeta }>(
+                    `/api/products?${filteredParams().toString()}`
+                  )
+                    .then((res) => {
+                      if (requestId.current !== id) return;
+                      setProducts(res.data.map(toProduct));
+                      setTotal(res.meta.total);
+                    })
+                    .catch((err: unknown) => {
+                      if (requestId.current !== id) return;
+                      setLoadError(err instanceof Error ? err.message : "Gagal memuat produk.");
+                    })
+                    .finally(() => {
+                      if (requestId.current === id) setLoading(false);
+                    });
+                }}
+              >
+                <Loader2 className="h-4 w-4 mr-2" />
+                Coba Lagi
+              </Button>
+            </div>
+          ) : products.length > 0 ? (
+            <div className="grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4">
+              {products.map((product, index) => (
                 <ProductCard
                   key={product.id}
                   productId={product.id}
@@ -378,23 +444,29 @@ export function MarketplaceContent() {
             </div>
           )}
 
-          {/* Pagination */}
-          {sortedProducts.length > 12 && (
+          {/* Pagination nyata dari server */}
+          {!loading && !loadError && total > PAGE_SIZE && (
             <div className="mt-10 flex items-center justify-center gap-2">
-              <Button variant="outline" size="icon" disabled>
-                <ChevronDown className="h-4 w-4" />
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                aria-label="Halaman sebelumnya"
+              >
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-              <Button variant="default" size="icon">
-                1
-              </Button>
-              <Button variant="outline" size="icon">
-                2
-              </Button>
-              <Button variant="outline" size="icon">
-                3
-              </Button>
-              <Button variant="outline" size="icon">
-                <ChevronDown className="h-4 w-4" />
+              <span className="text-sm text-muted-foreground px-2" aria-live="polite">
+                Halaman {page} dari {Math.max(1, Math.ceil(total / PAGE_SIZE))}
+              </span>
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={page >= Math.ceil(total / PAGE_SIZE)}
+                onClick={() => setPage((p) => p + 1)}
+                aria-label="Halaman berikutnya"
+              >
+                <ChevronDown className="h-4 w-4 -rotate-90" />
               </Button>
             </div>
           )}

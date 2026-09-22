@@ -1,39 +1,61 @@
 "use client";
 
 import { use } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Navbar } from "@/components/tanihub/navbar";
 import { Footer } from "@/components/tanihub/footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { SellerGate, SellerNav } from "@/components/tanihub/seller-nav";
+import { Skeleton } from "@/components/ui/skeleton";
+import { SellerGate, SellerNav, useSellerIdentity } from "@/components/tanihub/seller-nav";
 import { SellerProductForm } from "@/components/tanihub/seller-product-form";
 import type { SellerProductForm as FormValues } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
+import { apiFetch, apiPatch, type ApiProduct } from "@/lib/api";
 
 function EditProductContent({ id }: { id: string }) {
   const router = useRouter();
-  const farmer = useSellerStore((s) => s.farmer);
-  const products = useSellerCatalogStore((s) => s.products);
-  const isHydrated = useSellerCatalogStore((s) => s.isHydrated);
-  const updateProduct = useSellerCatalogStore((s) => s.updateProduct);
-  const adjustStock = useSellerCatalogStore((s) => s.adjustStock);
+  const identity = useSellerIdentity();
+  const [product, setProduct] = useState<ApiProduct | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "missing" | "error">("loading");
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const reqId = useRef(0);
 
-  if (!isHydrated) {
+  useEffect(() => {
+    const myId = ++reqId.current;
+    apiFetch<{ data: ApiProduct }>(`/api/products/${encodeURIComponent(id)}`)
+      .then((res) => {
+        if (reqId.current !== myId) return;
+        setProduct(res.data);
+        setState("ready");
+      })
+      .catch((err: unknown) => {
+        if (reqId.current !== myId) return;
+        if (err instanceof Error && "status" in err && (err as { status: number }).status === 404) {
+          setState("missing");
+        } else {
+          setState("error");
+          setError(err instanceof Error ? err.message : "Gagal memuat produk.");
+        }
+      });
+    return () => {
+      reqId.current++;
+    };
+  }, [id, reloadKey]);
+
+  if (state === "loading") {
     return (
       <div className="container-wide max-w-3xl space-y-4" aria-busy="true">
-        <div className="h-10 w-56 rounded-lg bg-muted animate-pulse" />
-        <div className="h-96 rounded-2xl bg-muted animate-pulse" />
+        <Skeleton className="h-10 w-56 rounded-lg" />
+        <Skeleton className="h-96 rounded-2xl" />
       </div>
     );
   }
-  if (!farmer) return null;
-
-  // Ownership: hanya produk milik farmer ini yang bisa dibuka.
-  const product = products.find((p) => p.id === id && p.farmerId === farmer.id);
-  if (!product) {
+  if (!identity) return null;
+  // Ownership ditegakkan server (404 bila bukan milik); cek lokal untuk pesan tepat.
+  if (state === "missing" || (product && product.farmerId !== identity.farmerId)) {
     return (
       <div className="container-wide max-w-3xl">
         <Card>
@@ -52,26 +74,44 @@ function EditProductContent({ id }: { id: string }) {
       </div>
     );
   }
+  if (state === "error" || !product) {
+    return (
+      <div className="container-wide max-w-3xl">
+        <Card>
+          <CardContent className="p-8 text-center">
+            <h1 className="text-xl font-bold text-foreground mb-2">Produk gagal dimuat.</h1>
+            <p className="text-sm text-muted-foreground mb-6">{error}</p>
+            <Button
+              onClick={() => {
+                setState("loading");
+                setError("");
+                setReloadKey((k) => k + 1);
+              }}
+            >
+              Coba Lagi
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
-  const handleSubmit = (values: FormValues) => {
-    // Stok tidak ditulis langsung agar selalu tercatat di riwayat: selisih
-    // stok disimpan sebagai transaksi penyesuaian.
+  const handleSubmit = async (values: FormValues) => {
+    // Satu panggilan PATCH atomik (produk + stok tercatat di server).
     const { stock, ...rest } = values;
-    const ok = updateProduct(product.id, farmer.id, rest);
-    if (!ok) {
-      toast.error("Gagal menyimpan. Produk bukan milik akun ini.");
-      return;
+    try {
+      await apiPatch(`/api/products/${encodeURIComponent(product.id)}`, {
+        ...rest,
+        ...(stock !== product.stock
+          ? { stock, stockReason: "Penyesuaian stok via edit produk" }
+          : {}),
+      });
+      toast.success(`Produk "${values.name.trim()}" diperbarui.`);
+      router.push("/kelola-produk");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal menyimpan.");
+      throw err;
     }
-    const delta = stock - product.stock;
-    if (delta !== 0) {
-      const res = adjustStock(product.id, farmer.id, delta, "Penyesuaian stok via edit produk");
-      if (!res.ok) {
-        toast.error(res.error ?? "Gagal menyesuaikan stok.");
-        return;
-      }
-    }
-    toast.success(`Produk "${values.name.trim()}" diperbarui.`);
-    router.push("/kelola-produk");
   };
 
   return (
@@ -80,7 +120,7 @@ function EditProductContent({ id }: { id: string }) {
         <h1 className="text-3xl lg:text-4xl font-bold text-foreground">Edit Produk</h1>
         <p className="text-muted-foreground mt-1">{product.name}</p>
       </div>
-      <SellerNav farmerId={farmer.id} />
+      <SellerNav farmerId={identity.farmerId} />
       <SellerProductForm
         title="Data Produk"
         initial={{
@@ -93,15 +133,15 @@ function EditProductContent({ id }: { id: string }) {
           minOrder: product.minOrder,
           location: product.location,
           grade: product.grade,
-          imageUrl: product.images[0] ?? "",
-          status: product.status,
+          imageUrl: product.image ?? "",
+          status: product.status as "draft" | "active" | "inactive",
         }}
         showInactiveOption={product.status === "inactive"}
         submitLabel="Simpan Perubahan"
-        onSubmit={handleSubmit}
+        onSubmit={(v) => void handleSubmit(v)}
       />
       <p className="text-xs text-muted-foreground">
-        Perubahan stok di sini otomatis tercatat sebagai penyesuaian di riwayat inventaris.
+        Perubahan stok otomatis tercatat sebagai penyesuaian di riwayat inventaris.
       </p>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -19,34 +20,124 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/tanihub/status-badge";
-import { SellerGate, SellerNav } from "@/components/tanihub/seller-nav";
-import { LOW_STOCK_THRESHOLD, getEffectiveStatus, stockAdjustSchema, type StockAdjustForm } from "@/data/seller";
-import { useSellerStore } from "@/store/seller";
-import { useSellerCatalogStore } from "@/store/seller-catalog";
+import { SellerGate, SellerNav, useSellerIdentity } from "@/components/tanihub/seller-nav";
+import { LOW_STOCK_THRESHOLD, stockAdjustSchema, type StockAdjustForm, type EffectiveProductStatus } from "@/data/seller";
+import { apiFetch, apiPost } from "@/lib/api";
 import { Loader2, Minus, Package, Plus } from "lucide-react";
 
-type AdjustTarget = { productId: string; mode: "add" | "reduce" } | null;
+interface InventoryRow {
+  productId: string;
+  productName: string | null;
+  productStatus: string | null;
+  quantity: number;
+  unit: string;
+  updatedAt: string;
+}
+
+interface HistoryEntry {
+  id: string;
+  change: number;
+  resultingStock: number;
+  reason: string;
+  referenceId: string | null;
+  createdAt: string;
+}
+
+type AdjustTarget = { productId: string; productName: string; unit: string; mode: "add" | "reduce" } | null;
+
+function effectiveStatus(productStatus: string | null, stock: number): EffectiveProductStatus {
+  if (productStatus !== "active") return (productStatus ?? "inactive") as EffectiveProductStatus;
+  if (stock <= 0) return "out_of_stock";
+  if (stock <= LOW_STOCK_THRESHOLD) return "low_stock";
+  return "active";
+}
 
 function InventoryContent() {
   const searchParams = useSearchParams();
   const focusId = searchParams.get("produk");
-  const farmer = useSellerStore((s) => s.farmer);
-  const products = useSellerCatalogStore((s) => s.products);
-  const history = useSellerCatalogStore((s) => s.history);
-  const isHydrated = useSellerCatalogStore((s) => s.isHydrated);
-  const adjustStock = useSellerCatalogStore((s) => s.adjustStock);
+  const identity = useSellerIdentity();
 
+  const [rows, setRows] = useState<InventoryRow[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [target, setTarget] = useState<AdjustTarget>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const reqId = useRef(0);
 
-  const myProducts = useMemo(() => {
-    const list = farmer ? products.filter((p) => p.farmerId === farmer.id) : [];
-    if (!focusId) return list;
-    // Produk dari deep-link tampil paling atas agar mudah ditemukan.
-    return [...list].sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0));
-  }, [products, farmer, focusId]);
+  const load = useCallback(async () => {
+    const id = ++reqId.current;
+    try {
+      const res = await apiFetch<{ data: InventoryRow[] }>("/api/inventory");
+      if (reqId.current !== id) return;
+      const list = [...res.data].sort((a, b) =>
+        a.productId === focusId ? -1 : b.productId === focusId ? 1 : 0
+      );
+      setRows(list);
+      if (focusId) {
+        try {
+          const detail = await apiFetch<{ data: { history: HistoryEntry[] } }>(
+            `/api/inventory/${encodeURIComponent(focusId)}`
+          );
+          if (reqId.current !== id) return;
+          setHistory(detail.data.history.slice(0, 20));
+        } catch {
+          if (reqId.current === id) setHistory([]);
+        }
+      } else {
+        setHistory([]);
+      }
+    } catch (err) {
+      if (reqId.current !== id) return;
+      setLoadError(err instanceof Error ? err.message : "Gagal memuat inventaris.");
+      setRows([]);
+    } finally {
+      if (reqId.current === id) setLoading(false);
+    }
+  }, [focusId]);
 
-  const recentHistory = useMemo(() => history.slice(0, 20), [history]);
+  useEffect(() => {
+    const id = ++reqId.current;
+    apiFetch<{ data: InventoryRow[] }>("/api/inventory").then(
+      (res) => {
+        if (reqId.current !== id) return;
+        const list = [...res.data].sort((a, b) =>
+          a.productId === focusId ? -1 : b.productId === focusId ? 1 : 0
+        );
+        setRows(list);
+        setLoadError(null);
+        if (!focusId) {
+          setHistory([]);
+          setLoading(false);
+          return;
+        }
+        apiFetch<{ data: { history: HistoryEntry[] } }>(
+          `/api/inventory/${encodeURIComponent(focusId)}`
+        ).then(
+          (detail) => {
+            if (reqId.current !== id) return;
+            setHistory(detail.data.history.slice(0, 20));
+            setLoading(false);
+          },
+          () => {
+            if (reqId.current !== id) return;
+            setHistory([]);
+            setLoading(false);
+          }
+        );
+      },
+      (err: unknown) => {
+        if (reqId.current !== id) return;
+        setLoadError(err instanceof Error ? err.message : "Gagal memuat inventaris.");
+        setRows([]);
+        setLoading(false);
+      }
+    );
+    return () => {
+      reqId.current++;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
 
   const form = useForm<StockAdjustForm>({
     resolver: zodResolver(stockAdjustSchema),
@@ -54,30 +145,31 @@ function InventoryContent() {
     defaultValues: { quantity: 0, reason: "" },
   });
 
-  if (!farmer) return null;
-  const targetProduct = target ? myProducts.find((p) => p.id === target.productId) : undefined;
+  if (!identity) return null;
 
-  const openDialog = (productId: string, mode: "add" | "reduce") => {
+  const openDialog = (row: InventoryRow, mode: "add" | "reduce") => {
     form.reset({ quantity: 0, reason: "" });
-    setTarget({ productId, mode });
+    setTarget({ productId: row.productId, productName: row.productName ?? "Produk", unit: row.unit, mode });
   };
 
-  const handleAdjust = (values: StockAdjustForm) => {
-    if (!target || !targetProduct || isSubmitting) return;
+  const handleAdjust = async (values: StockAdjustForm) => {
+    if (!target || isSubmitting) return;
     setIsSubmitting(true);
     try {
       const delta = target.mode === "add" ? values.quantity : -values.quantity;
-      const res = adjustStock(targetProduct.id, farmer.id, delta, values.reason);
-      if (!res.ok) {
-        toast.error(res.error ?? "Gagal memperbarui stok.");
-        return;
-      }
+      const res = await apiPost<{ data: { productId: string; stock: number } }>(
+        `/api/inventory/${encodeURIComponent(target.productId)}/adjust`,
+        { delta, reason: values.reason, kind: target.mode === "add" ? "RESTOCK" : "ADJUSTMENT" }
+      );
       toast.success(
         target.mode === "add"
-          ? `Stok ${targetProduct.name} bertambah ${values.quantity} ${targetProduct.unit}.`
-          : `Stok ${targetProduct.name} berkurang ${values.quantity} ${targetProduct.unit}.`
+          ? `Stok ${target.productName} menjadi ${res.data.stock} ${target.unit}.`
+          : `Stok ${target.productName} menjadi ${res.data.stock} ${target.unit}.`
       );
       setTarget(null);
+      void load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal memperbarui stok.");
     } finally {
       setIsSubmitting(false);
     }
@@ -92,11 +184,29 @@ function InventoryContent() {
         </p>
       </div>
 
-      <SellerNav farmerId={farmer.id} />
+      <SellerNav farmerId={identity.farmerId} />
 
-      {!isHydrated ? (
+      {loading ? (
         <div className="h-48 rounded-2xl bg-muted animate-pulse" aria-busy="true" />
-      ) : myProducts.length === 0 ? (
+      ) : loadError ? (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <h2 className="font-semibold text-foreground mb-2">Inventaris gagal dimuat.</h2>
+            <p className="text-sm text-muted-foreground mb-6">{loadError}</p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLoading(true);
+                setLoadError(null);
+                void load();
+              }}
+            >
+              <Loader2 className="h-4 w-4 mr-2" />
+              Coba Lagi
+            </Button>
+          </CardContent>
+        </Card>
+      ) : rows.length === 0 ? (
         <Card>
           <CardContent className="p-8 text-center">
             <Package className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
@@ -114,23 +224,23 @@ function InventoryContent() {
             </CardHeader>
             <CardContent className="p-0">
               <ul className="divide-y divide-border/50">
-                {myProducts.map((p) => (
-                  <li key={p.id} className="flex items-center gap-3 p-4">
+                {rows.map((r) => (
+                  <li key={r.productId} className="flex items-center gap-3 p-4">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
+                      <p className="text-sm font-medium text-foreground truncate">{r.productName ?? r.productId}</p>
                       <p className="text-xs text-muted-foreground">
-                        {p.stock} {p.unit} tersedia
+                        {r.quantity} {r.unit} tersedia
                       </p>
                       <div className="mt-1">
-                        <StatusBadge status={getEffectiveStatus(p)} type="product" />
+                        <StatusBadge status={effectiveStatus(r.productStatus, r.quantity)} type="product" />
                       </div>
                     </div>
                     <div className="flex gap-2">
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => openDialog(p.id, "add")}
-                        aria-label={`Tambah stok ${p.name}`}
+                        onClick={() => openDialog(r, "add")}
+                        aria-label={`Tambah stok ${r.productName}`}
                       >
                         <Plus className="h-4 w-4 mr-1" />
                         Tambah
@@ -138,9 +248,9 @@ function InventoryContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => openDialog(p.id, "reduce")}
-                        disabled={p.stock <= 0}
-                        aria-label={`Kurangi stok ${p.name}`}
+                        onClick={() => openDialog(r, "reduce")}
+                        disabled={r.quantity <= 0}
+                        aria-label={`Kurangi stok ${r.productName}`}
                       >
                         <Minus className="h-4 w-4 mr-1" />
                         Kurangi
@@ -157,28 +267,24 @@ function InventoryContent() {
               <CardTitle className="text-base">Riwayat Terakhir</CardTitle>
             </CardHeader>
             <CardContent>
-              {recentHistory.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Belum ada perubahan stok.</p>
+              {history.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {focusId ? "Belum ada perubahan stok produk ini." : "Pilih produk (via Kelola Produk → Stok) untuk melihat riwayat."}
+                </p>
               ) : (
                 <ul className="space-y-3">
-                  {recentHistory.map((h) => {
-                    const p = myProducts.find((x) => x.id === h.productId);
-                    return (
-                      <li key={h.id} className="text-sm border-b border-border/50 pb-3 last:border-0">
-                        <p className="font-medium text-foreground">
-                          {h.change > 0 ? "+" : ""}
-                          {h.change} {p?.unit ?? ""}{" "}
-                          <span className="font-normal text-muted-foreground">
-                            • {p?.name ?? "Produk dihapus"}
-                          </span>
-                        </p>
-                        <p className="text-xs text-muted-foreground">{h.reason}</p>
-                        <p className="text-xs text-muted-foreground">
-                          Stok menjadi {h.resultingStock} • {new Date(h.createdAt).toLocaleString("id-ID")}
-                        </p>
-                      </li>
-                    );
-                  })}
+                  {history.map((h) => (
+                    <li key={h.id} className="text-sm border-b border-border/50 pb-3 last:border-0">
+                      <p className="font-medium text-foreground">
+                        {h.change > 0 ? "+" : ""}
+                        {h.change}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{h.reason}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Stok menjadi {h.resultingStock} • {new Date(h.createdAt).toLocaleString("id-ID")}
+                      </p>
+                    </li>
+                  ))}
                 </ul>
               )}
             </CardContent>
@@ -191,7 +297,7 @@ function InventoryContent() {
           <DialogHeader>
             <DialogTitle>
               {target?.mode === "add" ? "Tambah stok" : "Kurangi stok"}
-              {targetProduct ? ` — ${targetProduct.name}` : ""}
+              {target ? ` — ${target.productName}` : ""}
             </DialogTitle>
           </DialogHeader>
           <form
@@ -202,7 +308,7 @@ function InventoryContent() {
             className="space-y-4"
           >
             <div>
-              <Label htmlFor="inv-qty">Jumlah ({targetProduct?.unit}) *</Label>
+              <Label htmlFor="inv-qty">Jumlah ({target?.unit}) *</Label>
               <Input id="inv-qty" type="number" min={1} step={1} {...form.register("quantity")} />
               {form.formState.errors.quantity && (
                 <p className="text-sm text-destructive mt-1">
